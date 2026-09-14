@@ -49,9 +49,13 @@ when a working game is installed there. This can affect updates that leave
 source-kit metadata beside `reVC.exe`.
 
 Use the corrected setup scripts; there is no need to delete or rename metadata.
-The installer accepts this mixed layout when `data/gta-vc.dat` and
+The installer accepts this mixed layout when `data/gta_vc.dat` and
 `models/gta3.img` are present and nonempty, and still validates the x64 game
 executable and project forwarder. A source-only folder remains rejected.
+
+An earlier setup incorrectly requested `gta-vc.dat` (a hyphen). The original
+game uses `gta_vc.dat` (an underscore); keep that filename and update the setup
+scripts instead of renaming or duplicating game data.
 Runtime checksums, signature policies, backup and restore are unchanged.
 
 ### Download sources and limitations

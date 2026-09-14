@@ -71,7 +71,7 @@ function New-TestGame {
 }
 
 function Add-TestGameData([string]$Game) {
-    foreach ($relative in @('data\gta-vc.dat', 'models\gta3.img')) {
+    foreach ($relative in @('data\gta_vc.dat', 'models\gta3.img')) {
         $path = Join-Path $Game $relative
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
         [IO.File]::WriteAllText($path, 'Synthetic game-data marker; not a playable asset.')
@@ -192,6 +192,8 @@ Invoke-Test 'source kit folder rejected' {
 Invoke-Test 'installed game with source-kit metadata accepted without changing it' {
     $game = New-TestGame
     Add-TestGameData $game
+    Assert-Test (Test-Path -LiteralPath (Join-Path $game 'data\gta_vc.dat') -PathType Leaf) 'Fixture must use the engine filename GTA_VC.DAT.'
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $game 'data\gta-vc.dat'))) 'A renamed copy must not be needed.'
     [IO.File]::WriteAllText((Join-Path $game 'patch-manifest.json'), '{}')
     $before = Get-TestSnapshot $game
     Assert-Test ((Get-DlssGameDirectory $game) -eq $game) 'A real game layout was rejected because of leftover metadata.'
@@ -207,7 +209,7 @@ Invoke-Test 'source-only folder rejected without creating runtime files' {
 }
 
 Invoke-Test 'metadata guard rejects missing, empty and directory-only game-data markers' {
-    foreach ($relative in @('data\gta-vc.dat', 'models\gta3.img')) {
+    foreach ($relative in @('data\gta_vc.dat', 'models\gta3.img')) {
         foreach ($kind in @('missing', 'empty', 'directory')) {
             $game = New-TestGame
             Add-TestGameData $game
