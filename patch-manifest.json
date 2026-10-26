@@ -10,7 +10,7 @@
     "patches":  [
                     {
                         "path":  "vice-city-vr.patch",
-                        "sha256":  "141a707a0bc115f1a2811bfa53bfad93564ac6f4c1299f529da4030639cde3c0",
+                        "sha256":  "a0bf36ae192b348023f76a668724effa82715aacff0c0e700baf309b29ffc76d",
                         "targets":  [
                                         {
                                             "path":  "CMakeLists.txt",
@@ -220,7 +220,7 @@
                                         {
                                             "path":  "src/core/main.cpp",
                                             "preimageSha256":  "1dbcc1495c3b2c6671565c264109568a6910d402dcbd741a42cff62faceb458c",
-                                            "postimageSha256":  "182ec692581b3cd996558455ea3200f49a5dbc534fb88d9eda269b9c2fd3cf72"
+                                            "postimageSha256":  "936817a67ac07c4c442cd51830aaf1e51fabbc4c64642d0a9e5d114a54401bbf"
                                         },
                                         {
                                             "path":  "src/core/main.h",
@@ -769,11 +769,11 @@
                     },
                     {
                         "path":  "src/vr/OculusVR.h",
-                        "sha256":  "14758a89d30faf9af0036c074fbbd2fb573016293ae621b6a647d6bac0ab5280"
+                        "sha256":  "6746bb2b48e6ae62c709892ec2aa3701e1bc1448330a2c13ee95a3333808313b"
                     },
                     {
                         "path":  "src/vr/OpenXRVR.cpp",
-                        "sha256":  "bfc9a14d425842bf8b3a455d71583949f5fc814ef0cd5fa414c80c0d6abb3d0d"
+                        "sha256":  "82b8b4286051202161cea23507cc5347fe693e795aa9bb287f0d95ee7148adef"
                     },
                     {
                         "path":  "src/vr/OpenXRWristHud.h",

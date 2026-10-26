@@ -722,6 +722,11 @@ ULONGLONG gTrackedScopeCandidateSince;
 ULONGLONG gTrackedScopeInvalidSince;
 bool gTrackedScopeReticleTargetValid;
 CVector gTrackedScopeReticleTarget;
+// Magnification of the sniper and laser scope optics. The right stick changes
+// it while the optic is active; each weapon keeps its value until the game exits.
+float gTrackedScopeZoom[2] = { 2.5f, 3.0f };
+ULONGLONG gTrackedScopeZoomShownAt;
+ULONGLONG gTrackedScopeZoomLastInput;
 struct PhysicalMeleeStrike
 {
 	bool pending;
@@ -10587,11 +10592,20 @@ bool IsPhysicalScopeWeaponTypeInternal(int weaponType)
 	}
 }
 
+int GetTrackedScopeZoomSlotInternal(int weaponType)
+{
+	switch(weaponType){
+	case WEAPONTYPE_SNIPERRIFLE: return 0;
+	case WEAPONTYPE_LASERSCOPE: return 1;
+	default: return -1;
+	}
+}
+
 float GetTrackedScopeZoomInternal()
 {
 	switch(gTrackedScopeWeaponType){
-	case WEAPONTYPE_SNIPERRIFLE: return 2.5f;
-	case WEAPONTYPE_LASERSCOPE: return 3.0f;
+	case WEAPONTYPE_SNIPERRIFLE: return gTrackedScopeZoom[0];
+	case WEAPONTYPE_LASERSCOPE: return gTrackedScopeZoom[1];
 	case WEAPONTYPE_ROCKETLAUNCHER: return 1.8f;
 	case WEAPONTYPE_CAMERA: return 1.6f;
 	default: return 1.0f;
@@ -15755,6 +15769,45 @@ bool UpdateTeleportInput(const XrVector2f &leftStick)
 	return false;
 }
 
+// Zooms an active sniper or laser scope optic with the right stick: up zooms
+// in, down zooms out, and full deflection doubles or halves the magnification
+// per second. 1x to 5.3x is the span of the desktop sniper camera, whose
+// field of view narrows from 70 to 15 degrees.
+// Returns true while the stick belongs to the optic instead of turning.
+bool UpdateTrackedScopeZoom(const XrVector2f &stick)
+{
+	const ULONGLONG now = GetTickCount64();
+	const ULONGLONG last = gTrackedScopeZoomLastInput;
+	gTrackedScopeZoomLastInput = now;
+	const int slot = IsTrackedScopeActive() ?
+		GetTrackedScopeZoomSlotInternal(gTrackedScopeWeaponType) : -1;
+	if(slot < 0)
+		return false;
+	const float deadZone = 0.25f;
+	const float amount = fabsf(stick.y);
+	if(last != 0 && amount > deadZone && amount >= fabsf(stick.x)){
+		const float seconds = Min((float)(now-last)/1000.0f, 0.1f);
+		const float speed = (amount-deadZone)/(1.0f-deadZone);
+		const float factor = powf(2.0f, copysignf(speed*seconds, stick.y));
+		gTrackedScopeZoom[slot] =
+			clamp(gTrackedScopeZoom[slot]*factor, 1.0f, 5.3f);
+		gTrackedScopeZoomShownAt = now;
+	}
+	return true;
+}
+
+bool GetTrackedScopeZoomLabel(float *zoom)
+{
+	// The magnification is shown for 1.5 seconds after the optic comes up
+	// and after every change.
+	if(!zoom || GetTrackedScopeZoomSlotInternal(gTrackedScopeWeaponType) < 0 ||
+	   !IsTrackedScopeActive() ||
+	   GetTickCount64()-gTrackedScopeZoomShownAt >= 1500ULL)
+		return false;
+	*zoom = GetTrackedScopeZoomInternal();
+	return true;
+}
+
 void ApplySnapTurn(float stickX)
 {
 	if(gTurnMode != VR_TURN_SNAP || FindPlayerVehicle() ||
@@ -16327,7 +16380,11 @@ bool ApplyTouchInput(CControllerState *state)
 		MergeAxis(state->LeftStickX, AxisValue(moveX));
 		MergeAxis(state->LeftStickY, AxisValue(-moveY));
 	}
-	ApplySnapTurn(sticks[1].x);
+	const bool scopeZoom = UpdateTrackedScopeZoom(sticks[1]);
+	if(scopeZoom)
+		gSnapTurnStickLatched = fabsf(sticks[1].x) >= 0.35f;
+	else
+		ApplySnapTurn(sticks[1].x);
 	if(!weaponLeftShortcut && !weaponRightShortcut){
 		const float physicalTurnScale =
 			(float)gTurnSensitivityPercent/100.0f;
@@ -16337,7 +16394,7 @@ bool ApplyTouchInput(CControllerState *state)
 			// RC aircraft use the right stick for yaw.  Locomotion turn mode
 			// and sensitivity must never consume or rescale that mission input.
 			MergeAxis(state->RightStickX, AxisValue(sticks[1].x));
-		}else if(gTurnMode != VR_TURN_SNAP){
+		}else if(gTurnMode != VR_TURN_SNAP && !scopeZoom){
 			MergeAxis(state->RightStickX, AxisValue(clamp(
 				sticks[1].x*physicalTurnScale, -1.0f, 1.0f)));
 		}
@@ -16345,7 +16402,8 @@ bool ApplyTouchInput(CControllerState *state)
 		// selected SNAP/SMOOTH mode continues to control the physical right stick.
 		MergeAxis(state->RightStickX, AxisValue(clamp(
 			headSteeringAxis*headTurnScale, -1.0f, 1.0f)));
-		MergeAxis(state->RightStickY, AxisValue(-sticks[1].y));
+		if(!scopeZoom)
+			MergeAxis(state->RightStickY, AxisValue(-sticks[1].y));
 	}
 	MergeButton(state->LeftShoulder2, weaponLeftShortcut);
 	MergeButton(state->RightShoulder2, weaponRightShortcut);
@@ -18297,10 +18355,11 @@ void SetTrackedScopeStateInternal(int hand, int weaponType)
 	for(int aimHand = 0; aimHand < EYE_COUNT; aimHand++)
 		gTrackedAimCacheValid[aimHand] = false;
 	ResetTemporalAaHistory();
-	if(hand >= 0)
+	if(hand >= 0){
+		gTrackedScopeZoomShownAt = GetTickCount64();
 		debug("[OpenXR] Physical optic active: hand=%d weapon=%d\n",
 			hand, weaponType);
-	else if(wasActive)
+	}else if(wasActive)
 		debug("[OpenXR] Physical optic released\n");
 }
 
