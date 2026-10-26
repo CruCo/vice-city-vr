@@ -250,6 +250,7 @@ bool ShouldRenderImmersiveCarWheel();
 bool GetImmersiveCarWheelPose(CVector *center, CVector *right,
 	CVector *up, CVector *normal, float *radius);
 void UpdateImmersiveCarModelSteeringWheel(CVehicle *vehicle);
+bool GetTrackedWeaponCarryMatrix(int hand, CMatrix *matrix);
 #endif
 bool IsVrBikeHorizonLocked();
 bool IsImmersiveBikeSidearm(int weaponType);

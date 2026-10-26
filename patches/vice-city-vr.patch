@@ -8304,7 +8304,7 @@ index a38fe72..eed8e00 100644
  	}
  
  	return &splash;
-@@ -1357,6 +1447,1301 @@ RenderScene(void)
+@@ -1357,6 +1447,1309 @@ RenderScene(void)
  	POP_RENDERGROUP();
  }
  
@@ -8666,6 +8666,14 @@ index a38fe72..eed8e00 100644
 +	if(!virtualDetonator)
 +		OculusVR::ApplyTrackedWeaponTwoHandTransform(hand, weaponType,
 +			&trackedWeapon);
++#ifdef GTA_VR_OPENXR
++	// A two-handed weapon carried only at its foregrip keeps the exact pose it
++	// had when the grip hand let go, and follows the carrying hand.
++	CMatrix carriedWeapon;
++	if(!virtualDetonator &&
++	   OculusVR::GetTrackedWeaponCarryMatrix(hand, &carriedWeapon))
++		trackedWeapon = carriedWeapon;
++#endif
 +	// Dropped/holstered rendering appends the authored adjustment itself. Store
 +	// the exact inverse-adjusted placement so releasing a calibrated weapon does
 +	// not make it jump, while the dropped path still reconstructs this same final
@@ -9606,7 +9614,7 @@ index a38fe72..eed8e00 100644
  void
  RenderDebugShit(void)
  {
-@@ -1382,10 +2767,19 @@ RenderEffects(void)
+@@ -1382,10 +2775,19 @@ RenderEffects(void)
  	}
  #endif
  	PUSH_RENDERGROUP("RenderEffects");
@@ -9626,7 +9634,7 @@ index a38fe72..eed8e00 100644
  	CShadows::RenderStaticShadows();
  	CShadows::RenderStoredShadows();
  	CSkidmarks::Render();
-@@ -1396,11 +2790,624 @@ RenderEffects(void)
+@@ -1396,11 +2798,624 @@ RenderEffects(void)
  	CPacManPickups::Render();
  	CWeaponEffects::Render();
  	CPointLights::RenderFogEffect();
@@ -10251,7 +10259,7 @@ index a38fe72..eed8e00 100644
  void
  Render2dStuff(void)
  {
-@@ -1411,9 +3418,14 @@ Render2dStuff(void)
+@@ -1411,9 +3426,14 @@ Render2dStuff(void)
  	RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDSRCALPHA);
  	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
  	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
@@ -10267,7 +10275,7 @@ index a38fe72..eed8e00 100644
  
  	if(TheCamera.m_WideScreenOn
  #ifdef CUTSCENE_BORDERS_SWITCH
-@@ -1453,21 +3465,92 @@ Render2dStuff(void)
+@@ -1453,21 +3473,92 @@ Render2dStuff(void)
  		CSprite2d::DrawRect(CRect(SCREEN_WIDTH / 2 + SCREEN_SCALE_X(210), 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), black);
  	}
  
@@ -10369,7 +10377,7 @@ index a38fe72..eed8e00 100644
  	CFont::DrawFonts();
  #ifndef MASTER
  	COcclusion::Render();
-@@ -1505,7 +3588,14 @@ Render2dStuffAfterFade(void)
+@@ -1505,7 +3596,14 @@ Render2dStuffAfterFade(void)
  #ifdef MOBILE_IMPROVEMENTS
  	if (CDraw::FadeValue != 0)
  #endif
@@ -10385,7 +10393,7 @@ index a38fe72..eed8e00 100644
  	CFont::DrawFonts();
  	CCredits::Render();
  	POP_RENDERGROUP();
-@@ -1515,39 +3605,77 @@ void
+@@ -1515,39 +3613,77 @@ void
  Idle(void *arg)
  {
  	CTimer::Update();
@@ -10464,7 +10472,7 @@ index a38fe72..eed8e00 100644
  
  	PUSH_MEMID(MEMID_RENDER);
  
-@@ -1562,6 +3690,12 @@ Idle(void *arg)
+@@ -1562,6 +3698,12 @@ Idle(void *arg)
  #endif
  
  		tbStartTimer(0, "CnstrRenderList");
@@ -10477,7 +10485,7 @@ index a38fe72..eed8e00 100644
  #ifdef PC_WATER
  		CWaterLevel::PreCalcWaterGeometry();
  #endif
-@@ -1572,12 +3706,43 @@ Idle(void *arg)
+@@ -1572,12 +3714,43 @@ Idle(void *arg)
  		}
  #endif
  		CRenderer::ConstructRenderList();
@@ -10521,7 +10529,7 @@ index a38fe72..eed8e00 100644
  #ifdef FIX_BUGS
  		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE); // TODO: temp? this fixes OpenGL render but there should be a better place for this
  		// This has to be done BEFORE RwCameraBeginUpdate
-@@ -1585,7 +3750,16 @@ Idle(void *arg)
+@@ -1585,7 +3758,16 @@ Idle(void *arg)
  		RwCameraSetFogDistance(Scene.camera, CTimeCycle::GetFogStart());
  #endif
  
@@ -10539,7 +10547,7 @@ index a38fe72..eed8e00 100644
  			if(!DoRWStuffStartOfFrame_Horizon(255, 255, 255, 255, 255, 255, 255))
  				goto popret;
  		}else{
-@@ -1596,6 +3770,9 @@ Idle(void *arg)
+@@ -1596,6 +3778,9 @@ Idle(void *arg)
  		}
  
  		DefinedState();
@@ -10549,7 +10557,7 @@ index a38fe72..eed8e00 100644
  
  #ifndef FIX_BUGS
  		RwCameraSetFarClipPlane(Scene.camera, CTimeCycle::GetFarClip());
-@@ -1603,34 +3780,75 @@ Idle(void *arg)
+@@ -1603,34 +3788,75 @@ Idle(void *arg)
  #endif
  
  		tbStartTimer(0, "RenderScene");
@@ -10633,7 +10641,7 @@ index a38fe72..eed8e00 100644
  		CDraw::CalculateAspectRatio();
  #ifdef ASPECT_RATIO_SCALE
  		CameraSize(Scene.camera, nil, SCREEN_VIEWWINDOW, SCREEN_ASPECT_RATIO);
-@@ -1644,6 +3862,9 @@ Idle(void *arg)
+@@ -1644,6 +3870,9 @@ Idle(void *arg)
  	}
  
  	tbStartTimer(0, "RenderMenus");
@@ -10643,7 +10651,7 @@ index a38fe72..eed8e00 100644
  	RenderMenus();
  	tbEndTimer("RenderMenus");
  
-@@ -1667,15 +3888,35 @@ Idle(void *arg)
+@@ -1667,15 +3896,35 @@ Idle(void *arg)
  	if (gbShowTimebars)
  		tbDisplay();
  
