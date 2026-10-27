@@ -212,6 +212,7 @@ enum eVrMainMenuItem
 	VR_MAIN_HOLSTER_HIGHLIGHTS,
 	VR_MAIN_MANUAL_RELOAD,
 	VR_MAIN_SCOPE_AIM,
+	VR_MAIN_SCOPE_OTHER_EYE,
 	VR_MAIN_AIM_DIRECTION,
 	VR_MAIN_VEHICLE_SETTINGS,
 	VR_MAIN_LOCOMOTION_SETTINGS,
@@ -851,6 +852,8 @@ int gWeaponHapticsStrengthPercent = 100;
 bool gWeaponHolsterHighlightsEnabled = false;
 bool gManualReloadEnabled = false;
 bool gPhysicalScopeAimEnabled = true;
+// Black out the eye that is not behind an active sniper, laser or rocket optic.
+bool gScopeOtherEyeDark = true;
 bool gHeadAimEnabled;
 bool gWeaponGripLockEnabled;
 int gCarDrivingType;
@@ -2531,6 +2534,8 @@ void LoadVrSettings()
 		GetPrivateProfileIntA("VR", "ManualReloading", 0, path) != 0;
 	gPhysicalScopeAimEnabled =
 		GetPrivateProfileIntA("VR", "PhysicalScopeAim", 1, path) != 0;
+	gScopeOtherEyeDark =
+		GetPrivateProfileIntA("VR", "ScopeOtherEyeDark", 1, path) != 0;
 	gHeadAimEnabled =
 		GetPrivateProfileIntA("VR", "HeadAim", 0, path) != 0;
 	gWeaponGripLockEnabled =
@@ -7661,6 +7666,8 @@ bool UpdateVrMenuSwapchain()
 		gManualReloadEnabled ? "ON" : "OFF");
 	sprintf(rows[VR_MAIN_SCOPE_AIM], "PHYSICAL SCOPE AIM  < %s >",
 		gPhysicalScopeAimEnabled ? "ON" : "OFF");
+	sprintf(rows[VR_MAIN_SCOPE_OTHER_EYE], "SCOPE OTHER EYE  < %s >",
+		gScopeOtherEyeDark ? "DARK" : "OPEN");
 	sprintf(rows[VR_MAIN_AIM_DIRECTION], "AIM DIRECTION  < %s >",
 		gHeadAimEnabled ? "HEAD" : "CONTROLLER");
 	strcpy(rows[VR_MAIN_VEHICLE_SETTINGS], "VEHICLE SETTINGS  < OPEN >");
@@ -13903,6 +13910,10 @@ void ChangeVrMenuValue(int direction)
 		SaveVrSetting("PhysicalScopeAim", gPhysicalScopeAimEnabled);
 		ResetTrackedScopeState();
 		break;
+	case VR_MAIN_SCOPE_OTHER_EYE:
+		gScopeOtherEyeDark = !gScopeOtherEyeDark;
+		SaveVrSetting("ScopeOtherEyeDark", gScopeOtherEyeDark);
+		break;
 	case VR_MAIN_AIM_DIRECTION:
 		gHeadAimEnabled = !gHeadAimEnabled;
 		SaveVrSetting("HeadAim", gHeadAimEnabled);
@@ -19166,6 +19177,23 @@ bool SubmitStereoFrame(RwCamera *camera)
 				(float)VR_HUD_HEIGHT/VR_HUD_WIDTH;
 		}
 	}
+	XrCompositionLayerQuad otherEye={XR_TYPE_COMPOSITION_LAYER_QUAD};
+	const bool darkOtherEye=showHud && gScopeOtherEyeDark &&
+		IsTrackedScopeActive() && gTrackedScopeEye >= 0;
+	if(darkOtherEye){
+		// An opaque layer in front of the other eye, sampled from the black
+		// strip RenderVrGameplayHud keeps at the left edge of the HUD image.
+		otherEye.space=gViewSpace;
+		otherEye.eyeVisibility=gTrackedScopeEye==0?
+			XR_EYE_VISIBILITY_RIGHT:XR_EYE_VISIBILITY_LEFT;
+		otherEye.subImage.swapchain=gHudSwapchain.handle;
+		otherEye.subImage.imageRect.offset={4,VR_HUD_HEIGHT/2};
+		otherEye.subImage.imageRect.extent={8,8};
+		otherEye.pose.orientation.w=1.0f;
+		otherEye.pose.position.z=-0.5f;
+		otherEye.size.width=8.0f;
+		otherEye.size.height=8.0f;
+	}
 	XrCompositionLayerQuad debugLayer={XR_TYPE_COMPOSITION_LAYER_QUAD};
 	if(showDebug){
 		debugLayer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -19192,9 +19220,10 @@ bool SubmitStereoFrame(RwCamera *camera)
 		vrMenuLayer.size.height=vrMenuLayer.size.width*
 			(float)VR_MENU_HEIGHT/VR_MENU_WIDTH;
 	}
-	const XrCompositionLayerBaseHeader *layers[4+WristHudSettings::PANEL_COUNT]; uint32_t count=0;
+	const XrCompositionLayerBaseHeader *layers[5+WristHudSettings::PANEL_COUNT]; uint32_t count=0;
 	layers[count++]=(const XrCompositionLayerBaseHeader*)&projection;
 	if(showHud) layers[count++]=(const XrCompositionLayerBaseHeader*)&hud;
+	if(darkOtherEye) layers[count++]=(const XrCompositionLayerBaseHeader*)&otherEye;
 	if(showHud)
 		for(int panel = 0; panel < WristHudSettings::PANEL_COUNT; panel++)
 			if(gWristHudLayerMask & (1u << panel))
