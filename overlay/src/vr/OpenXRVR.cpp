@@ -10702,7 +10702,7 @@ bool IsPhysicalThrowableTypeInternal(int weaponType)
 // fastest hand velocity of the last 100 ms plus the player's own movement.
 // The game's gravity is twice the real one and a controller is far lighter
 // than a real grenade, so at 100% THROW STRENGTH the hand speed is scaled by
-// 2.5: a 10 m/s swing then carries about 30 m.
+// 3.25, the value found right in VR testing.
 CVector BuildPhysicalThrowVelocity(int hand)
 {
 	const ULONGLONG now = GetTickCount64();
@@ -10720,7 +10720,7 @@ CVector BuildPhysicalThrowVelocity(int hand)
 		}
 	}
 	CVector velocity = ToGameVector(peak)*
-		(2.5f*(float)gThrowStrengthPercent/100.0f/50.0f);
+		(3.25f*(float)gThrowStrengthPercent/100.0f/50.0f);
 	const float maximum = 1.2f;	// 60 m/s
 	if(velocity.Magnitude() > maximum)
 		velocity *= maximum/velocity.Magnitude();
