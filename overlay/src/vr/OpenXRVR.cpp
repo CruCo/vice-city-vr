@@ -15028,29 +15028,37 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 		handledHands |= (1u << source) | (1u << receiver);
 	}
 
-	// A flying gun can be caught with the other free hand.  Unlike a holster or
+	// A flying gun can be caught with either free hand.  Unlike a holster or
 	// direct hand-off, the grip may already be held while waiting for the gun to
 	// enter the catch radius, which makes actual toss-and-catch gestures reliable.
+	// The hand that let go waits briefly, so a grip that bounces back right after
+	// the release does not catch the gun again on the spot.
 	for(int receiver = 0; receiver < EYE_COUNT; receiver++){
-		const int source = 1-receiver;
 		if((handledHands & (1u << receiver)) != 0 ||
 		   IsWeaponSupportHandInternal(receiver) ||
 		   gHeldWeaponSlot[receiver] >= 0 || grips[receiver] < 0.55f ||
-		   !gTrackedHandPoseValid[receiver] || gDroppedWeaponSlot[source] < 0)
-			continue;
-		CMatrix flyingWeapon;
-		if(!BuildDroppedWeaponMatrix(source, now, &flyingWeapon))
+		   !gTrackedHandPoseValid[receiver])
 			continue;
 		const CVector receiverPosition = gBaseCamera.GetPosition()+
 			ToGameVector(gTrackedHandPose[receiver].position);
-		if((receiverPosition-flyingWeapon.GetPosition()).Magnitude() > 0.22f)
-			continue;
-		const int slot = gDroppedWeaponSlot[source];
-		ClearDroppedWeapon(source);
-		GiveWeaponToHand(receiver, slot, "caught by");
-		gTrackedWeaponRenderMatrix[receiver] = flyingWeapon;
-		gTrackedWeaponRenderMatrixSlot[receiver] = slot;
-		handledHands |= 1u << receiver;
+		for(int pass = 0; pass < EYE_COUNT; pass++){
+			const int source = pass == 0 ? 1-receiver : receiver;
+			if(gDroppedWeaponSlot[source] < 0 ||
+			   (source == receiver &&
+			    now-gDroppedWeaponStartTime[source] < 150ULL))
+				continue;
+			CMatrix flyingWeapon;
+			if(!BuildDroppedWeaponMatrix(source, now, &flyingWeapon) ||
+			   (receiverPosition-flyingWeapon.GetPosition()).Magnitude() > 0.22f)
+				continue;
+			const int slot = gDroppedWeaponSlot[source];
+			ClearDroppedWeapon(source);
+			GiveWeaponToHand(receiver, slot, "caught by");
+			gTrackedWeaponRenderMatrix[receiver] = flyingWeapon;
+			gTrackedWeaponRenderMatrixSlot[receiver] = slot;
+			handledHands |= 1u << receiver;
+			break;
+		}
 	}
 
 	for(int hand = 0; hand < EYE_COUNT; hand++){
