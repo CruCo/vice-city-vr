@@ -727,7 +727,9 @@ CVector gTrackedScopeReticleTarget;
 // it while the optic is active; each weapon keeps its value until the game exits.
 float gTrackedScopeZoom[2] = { 2.5f, 3.0f };
 ULONGLONG gTrackedScopeZoomShownAt;
-ULONGLONG gTrackedScopeZoomLastInput;
+// PerfNowMs of the last stick update; GetTickCount64 only advances every
+// 10-16 ms, which would zoom in visible steps at 90-120 Hz.
+double gTrackedScopeZoomLastInput;
 // Eye behind the active optic, or -1 while both eyes see it (camera viewfinder).
 int gTrackedScopeEye = -1;
 struct PhysicalMeleeStrike
@@ -7667,7 +7669,7 @@ bool UpdateVrMenuSwapchain()
 	sprintf(rows[VR_MAIN_SCOPE_AIM], "PHYSICAL SCOPE AIM  < %s >",
 		gPhysicalScopeAimEnabled ? "ON" : "OFF");
 	sprintf(rows[VR_MAIN_SCOPE_OTHER_EYE], "SCOPE OTHER EYE  < %s >",
-		gScopeOtherEyeDark ? "DARK" : "OPEN");
+		gScopeOtherEyeDark ? "DARK" : "VISIBLE");
 	sprintf(rows[VR_MAIN_AIM_DIRECTION], "AIM DIRECTION  < %s >",
 		gHeadAimEnabled ? "HEAD" : "CONTROLLER");
 	strcpy(rows[VR_MAIN_VEHICLE_SETTINGS], "VEHICLE SETTINGS  < OPEN >");
@@ -10612,9 +10614,10 @@ int GetTrackedScopeZoomSlotInternal(int weaponType)
 
 float GetTrackedScopeZoomInternal()
 {
+	const int slot = GetTrackedScopeZoomSlotInternal(gTrackedScopeWeaponType);
+	if(slot >= 0)
+		return gTrackedScopeZoom[slot];
 	switch(gTrackedScopeWeaponType){
-	case WEAPONTYPE_SNIPERRIFLE: return gTrackedScopeZoom[0];
-	case WEAPONTYPE_LASERSCOPE: return gTrackedScopeZoom[1];
 	case WEAPONTYPE_ROCKETLAUNCHER: return 1.8f;
 	case WEAPONTYPE_CAMERA: return 1.6f;
 	default: return 1.0f;
@@ -15792,8 +15795,8 @@ bool UpdateTeleportInput(const XrVector2f &leftStick)
 // Returns true while the stick belongs to the optic instead of turning.
 bool UpdateTrackedScopeZoom(const XrVector2f &stick)
 {
-	const ULONGLONG now = GetTickCount64();
-	const ULONGLONG last = gTrackedScopeZoomLastInput;
+	const double now = PerfNowMs();
+	const double last = gTrackedScopeZoomLastInput;
 	gTrackedScopeZoomLastInput = now;
 	const int slot = IsTrackedScopeActive() ?
 		GetTrackedScopeZoomSlotInternal(gTrackedScopeWeaponType) : -1;
@@ -15802,12 +15805,12 @@ bool UpdateTrackedScopeZoom(const XrVector2f &stick)
 	const float deadZone = 0.25f;
 	const float amount = fabsf(stick.y);
 	if(last != 0 && amount > deadZone && amount >= fabsf(stick.x)){
-		const float seconds = Min((float)(now-last)/1000.0f, 0.1f);
+		const float seconds = Min((float)((now-last)/1000.0), 0.1f);
 		const float speed = (amount-deadZone)/(1.0f-deadZone);
 		const float factor = powf(2.0f, copysignf(speed*seconds, stick.y));
 		gTrackedScopeZoom[slot] =
 			clamp(gTrackedScopeZoom[slot]*factor, 1.0f, 5.3f);
-		gTrackedScopeZoomShownAt = now;
+		gTrackedScopeZoomShownAt = GetTickCount64();
 	}
 	return true;
 }
