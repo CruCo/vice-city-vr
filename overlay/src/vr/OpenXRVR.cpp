@@ -14733,9 +14733,6 @@ void StartDroppedWeapon(int hand, int slot)
 }
 
 enum { DROPPED_WEAPON_LIFETIME_MS = 1800, DROPPED_WEAPON_SELF_CATCH_DELAY_MS = 150 };
-// A gun let go slower than this (world units per second) was dropped rather
-// than tossed, and only the other hand can catch it.
-static const float DROPPED_WEAPON_SELF_CATCH_SPEED = 0.5f;
 
 void ClearDroppedWeapon(int hand)
 {
@@ -14897,8 +14894,10 @@ bool UpdateAttachedMissionWeaponInput(const float *grips)
 	return true;
 }
 
-// The holstered weapon this hand can grab from where it is, or -1.
-int FindReachableHolsterSlot(int hand, const CVector &handPosition)
+// The holstered weapon this hand can grab from where it is, or -1, and its
+// distance from the hand.
+int FindReachableHolsterSlot(int hand, const CVector &handPosition,
+	float *distanceOut = nil)
 {
 	float closestDistance = WEAPON_HOLSTER_REACH;
 	int closestSlot = -1;
@@ -14915,6 +14914,8 @@ int FindReachableHolsterSlot(int hand, const CVector &handPosition)
 			closestSlot = slot;
 		}
 	}
+	if(distanceOut)
+		*distanceOut = closestDistance;
 	return closestSlot;
 }
 
@@ -15055,9 +15056,10 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 	// A flying gun can be caught with either free hand.  Unlike a holster or
 	// direct hand-off, the grip may already be held while waiting for the gun to
 	// enter the catch radius, which makes actual toss-and-catch gestures reliable.
-	// The hand that let go can only catch a gun it tossed, after a short delay so
-	// a grip that bounces back does not catch it on the spot, and not while it
-	// reaches for a holster.
+	// The hand that let go can catch its own gun again, tossed or simply
+	// dropped, after a short delay so a grip that bounces back does not catch it
+	// on the spot. When a holster is closer to the hand than the falling gun,
+	// the grab loop below takes the holstered weapon instead.
 	for(int receiver = 0; receiver < EYE_COUNT; receiver++){
 		// A remote grenade caught by the previous hand reserves this one.
 		handledHands |= GetTrackedDetonatorHandMaskInternal();
@@ -15073,16 +15075,19 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 		for(int index = 0; index < EYE_COUNT; index++){
 			const int source = sources[index];
 			if(gDroppedWeaponSlot[source] < 0 ||
-			   (source == receiver &&
-			    (now-gDroppedWeaponStartTime[source] <
-			     DROPPED_WEAPON_SELF_CATCH_DELAY_MS ||
-			     gDroppedWeaponLinearVelocity[source].Magnitude() <
-			     DROPPED_WEAPON_SELF_CATCH_SPEED ||
-			     FindReachableHolsterSlot(receiver, receiverPosition) >= 0)))
+			   (source == receiver && now-gDroppedWeaponStartTime[source] <
+			    DROPPED_WEAPON_SELF_CATCH_DELAY_MS))
 				continue;
 			CMatrix flyingWeapon;
-			if(!BuildDroppedWeaponMatrix(source, now, &flyingWeapon) ||
-			   (receiverPosition-flyingWeapon.GetPosition()).Magnitude() > 0.22f)
+			if(!BuildDroppedWeaponMatrix(source, now, &flyingWeapon))
+				continue;
+			const float gunDistance =
+				(receiverPosition-flyingWeapon.GetPosition()).Magnitude();
+			float holsterDistance;
+			if(gunDistance > 0.22f ||
+			   (source == receiver &&
+			    FindReachableHolsterSlot(receiver, receiverPosition,
+			    &holsterDistance) >= 0 && holsterDistance < gunDistance))
 				continue;
 			const int slot = gDroppedWeaponSlot[source];
 			ClearDroppedWeapon(source);
