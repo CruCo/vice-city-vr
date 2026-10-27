@@ -1072,11 +1072,16 @@ index 51ef6c0..b829134 100644
  	static char *GetCutsceneName(void) { return ms_cutsceneName; }
  	static void SetCutsceneOffset(const CVector& vec) { ms_cutsceneOffset = vec; }
 diff --git a/src/audio/AudioLogic.cpp b/src/audio/AudioLogic.cpp
-index 7469f57..bed296e 100644
+index 7469f57..b153370 100644
 --- a/src/audio/AudioLogic.cpp
 +++ b/src/audio/AudioLogic.cpp
-@@ -42,6 +42,9 @@
+@@ -40,8 +40,14 @@
+ #include "Bike.h"
+ #include "WindModifiers.h"
  #include "Fluff.h"
++#ifdef GTA_VR_OPENXR
++#include "OculusVR.h"
++#endif
  #include "Script.h"
  #include "Wanted.h"
 +#ifdef GTA_VR_OPENXR
@@ -1085,7 +1090,21 @@ index 7469f57..bed296e 100644
  
  const int channels = ARRAY_SIZE(AudioManager.m_asActiveSamples);
  const int policeChannel = channels + 1;
-@@ -1672,6 +1675,19 @@ cAudioManager::ProcessPlayersVehicleEngine(cVehicleParams& params, CVehicle* veh
+@@ -269,7 +275,13 @@ cAudioManager::ProcessReverb() const
+ float
+ cAudioManager::GetDistanceSquared(const CVector &v) const
+ {
++#ifdef GTA_VR_OPENXR
++	// Volume and range from the same point TranslateEntity hears from.
++	CMatrix listener;
++	const CVector &c = OculusVR::GetAudioListenerMatrix(&listener) ? listener.GetPosition() : TheCamera.GetPosition();
++#else
+ 	const CVector &c = TheCamera.GetPosition();
++#endif
+ 	return sq(v.x - c.x) + sq(v.y - c.y) + sq((v.z - c.z) * 0.2f);
+ }
+ 
+@@ -1672,6 +1684,19 @@ cAudioManager::ProcessPlayersVehicleEngine(cVehicleParams& params, CVehicle* veh
  	} else {
  		accelerateState = Pads[0].GetAccelerate();
  		brakeState = Pads[0].GetBrake();
@@ -1106,7 +1125,7 @@ index 7469f57..bed296e 100644
  	channelUsed = SampleManager.GetChannelUsedFlag(m_nActiveSamples);
  	if (isMoped) {
 diff --git a/src/audio/AudioManager.cpp b/src/audio/AudioManager.cpp
-index 2304b4c..4761efd 100644
+index 2304b4c..5377983 100644
 --- a/src/audio/AudioManager.cpp
 +++ b/src/audio/AudioManager.cpp
 @@ -11,6 +11,9 @@
@@ -1134,6 +1153,18 @@ index 2304b4c..4761efd 100644
 +#endif
  	*out = MultiplyInverse(TheCamera.GetMatrix(), *in);
  }
+ 
+@@ -697,6 +709,11 @@ void
+ cAudioManager::UpdateReflections()
+ {
+ 	CVector camPos = TheCamera.GetPosition();
++#ifdef GTA_VR_OPENXR
++	CMatrix listener;
++	if (OculusVR::GetAudioListenerMatrix(&listener))
++		camPos = listener.GetPosition();
++#endif
+ 	CColPoint colpoint;
+ 	CEntity *ent;
  
 diff --git a/src/audio/MusicManager.cpp b/src/audio/MusicManager.cpp
 index 9c6f61f..f2e3cfd 100644
@@ -1752,7 +1783,7 @@ index 36f230b..296a7de 100644
  }
  
 diff --git a/src/audio/sampman_oal.cpp b/src/audio/sampman_oal.cpp
-index ae4b1cb..210b555 100644
+index ae4b1cb..5319efa 100644
 --- a/src/audio/sampman_oal.cpp
 +++ b/src/audio/sampman_oal.cpp
 @@ -2,6 +2,10 @@
@@ -2017,7 +2048,7 @@ index ae4b1cb..210b555 100644
  ///////////////////////////////////////////////////////////////
  //	Env		Size	Diffus	Room	RoomHF	RoomLF	DecTm	DcHF	DcLF	Refl	RefDel	Ref Pan				Revb	RevDel		Rev Pan				EchTm	EchDp	ModTm	ModDp	AirAbs	HFRef		LFRef	RRlOff	FLAGS
  EAXLISTENERPROPERTIES StartEAX3 =
-@@ -266,6 +503,46 @@ release_existing()
+@@ -266,6 +503,64 @@ release_existing()
  	DEV("release_existing()\n");
  }
  
@@ -2027,17 +2058,31 @@ index ae4b1cb..210b555 100644
 +// the head resolves what is left. The VR setting can change in game.
 +static int nVrHrtfGeneration = -1;
 +
++static bool
++IsVrHrtfSupported(void)
++{
++	return ALDevice && alcIsExtensionPresent(ALDevice, "ALC_SOFT_HRTF");
++}
++
++// Fills the two attribute slots, or leaves them 0 (the list end) when the
++// driver has no HRTF support.
 +static void
 +SetVrHrtfAttributes(ALCint *attr)
 +{
++	nVrHrtfGeneration = OculusVR::GetAudioHrtfGeneration();
++	if ( !IsVrHrtfSupported() )
++		return;
 +	attr[0] = ALC_HRTF_SOFT;
 +	attr[1] = OculusVR::IsAudioHrtfEnabled() ? ALC_TRUE : ALC_FALSE;
-+	nVrHrtfGeneration = OculusVR::GetAudioHrtfGeneration();
 +}
 +
 +static void
 +LogVrHrtfStatus(void)
 +{
++	if ( !IsVrHrtfSupported() ) {
++		debug("OpenAL headphone HRTF not supported\n");
++		return;
++	}
 +	ALCint enabled = ALC_FALSE, status = 0;
 +	alcGetIntegerv(ALDevice, ALC_HRTF_SOFT, 1, &enabled);
 +	alcGetIntegerv(ALDevice, ALC_HRTF_STATUS_SOFT, 1, &status);
@@ -2055,28 +2100,32 @@ index ae4b1cb..210b555 100644
 +					0,
 +					};
 +	SetVrHrtfAttributes(&attr[4]);
++	if ( !IsVrHrtfSupported() )
++		return;
 +	LPALCRESETDEVICESOFT resetDevice = (LPALCRESETDEVICESOFT)alcGetProcAddress(ALDevice, "alcResetDeviceSOFT");
 +	if ( resetDevice && resetDevice(ALDevice, attr) )
 +		LogVrHrtfStatus();
++	else
++		debug("OpenAL headphone HRTF: device reset failed\n");
 +}
 +#endif
 +
  static bool
  set_new_provider(int index)
  {
-@@ -285,14 +562,21 @@ set_new_provider(int index)
+@@ -285,14 +580,21 @@ set_new_provider(int index)
  		
  		ALCint attr[] = {ALC_FREQUENCY,MAX_FREQ,
  						ALC_MONO_SOURCES, MAX_STREAMS * 2 + MAXCHANNELS,
 +						0, 0,
  						0,
  						};
-+#ifdef GTA_VR_OPENXR
-+		SetVrHrtfAttributes(&attr[4]);
-+#endif
  		
  		ALDevice  = alcOpenDevice(providers[index].id);
  		ASSERT(ALDevice != NULL);
++#ifdef GTA_VR_OPENXR
++		SetVrHrtfAttributes(&attr[4]);
++#endif
  		
  		ALContext = alcCreateContext(ALDevice, attr);
  		ASSERT(ALContext != NULL);
@@ -2086,7 +2135,7 @@ index ae4b1cb..210b555 100644
  		
  		alcMakeContextCurrent(ALContext);
  	
-@@ -1055,6 +1339,7 @@ cSampleManager::Initialise(void)
+@@ -1055,6 +1357,7 @@ cSampleManager::Initialise(void)
  			aStream[i]       = NULL;
  			nStreamVolume[i] = 100;
  			nStreamPan[i]    = 63;
@@ -2094,7 +2143,7 @@ index ae4b1cb..210b555 100644
  		}
  	}
  	
-@@ -1131,6 +1416,8 @@ cSampleManager::Initialise(void)
+@@ -1131,6 +1434,8 @@ cSampleManager::Initialise(void)
  		
  		_bIsMp3Active = false;
  	}
@@ -2103,7 +2152,7 @@ index ae4b1cb..210b555 100644
  	
  	return true;
  }
-@@ -1138,6 +1425,9 @@ cSampleManager::Initialise(void)
+@@ -1138,6 +1443,9 @@ cSampleManager::Initialise(void)
  void
  cSampleManager::Terminate(void)
  {
@@ -2113,7 +2162,39 @@ index ae4b1cb..210b555 100644
  	for (int32 i = 0; i < MAX_STREAMS; i++)
  	{
  		CStream *stream = aStream[i];
-@@ -1734,93 +2024,100 @@ cSampleManager::StartPreloadedStreamedFile(uint8 nStream)
+@@ -1577,7 +1885,15 @@ cSampleManager::SetChannel3DPosition(uint32 nChannel, float fX, float fY, float
+ 	ASSERT( nChannel != CHANNEL2D );
+ 	ASSERT( nChannel < MAXCHANNELS+MAX2DCHANNELS );
+ 	
++#ifdef GTA_VR_OPENXR
++	// The sources are head relative, and OpenAL takes those in its own listener
++	// space (x right, y up, -z forward) without the listener orientation. The
++	// game's (left, forward, up) maps to (-x, -z, y); stereo only needs x, but
++	// HRTF needs forward and up in the right place.
++	aChannel[nChannel].SetPosition(-fX, fZ, -fY);
++#else
+ 	aChannel[nChannel].SetPosition(-fX, fY, fZ);
++#endif
+ }
+ 
+ void
+@@ -1621,7 +1937,15 @@ cSampleManager::SetChannelPan(uint32 nChannel, uint32 nPan)
+ 	
+ 	if ( nChannel == CHANNEL2D )
+ 	{
++#ifdef GTA_VR_OPENXR
++		// CChannel::SetPan puts the centre at +z, which is behind the head in
++		// OpenAL's listener space; HRTF would play front-end sounds, speech
++		// and the player's engine from behind. Keep the pan on the front arc.
++		float x = (int32(nPan) - 63) / 64.0f;
++		aChannel[nChannel].SetPosition(x, 0.0f, -Sqrt(1.0f - SQR(x)));
++#else
+ 		aChannel[nChannel].SetPan(nPan);
++#endif
+ 	}
+ }
+ 
+@@ -1734,93 +2058,100 @@ cSampleManager::StartPreloadedStreamedFile(uint8 nStream)
  bool
  cSampleManager::StartStreamedFile(uint32 nFile, uint32 nPos, uint8 nStream)
  {
@@ -2210,11 +2291,11 @@ index ae4b1cb..210b555 100644
 +						aStream[nStream] = NULL;
  					}
 +					return false;
-+
-+				} else {
  
 -					if (mp3->pLinkPath != NULL)
 -						aStream[nStream] = new CStream(mp3->pLinkPath, ALStreamSources[nStream], ALStreamBuffers[nStream], IsThisTrackAt16KHz(nFile) ? 16000 : 32000);
++				} else {
++
 +					if (e->pLinkPath != NULL)
 +						aStream[nStream] = new CStream(e->pLinkPath, ALStreamSources[nStream], ALStreamBuffers[nStream], IsThisTrackAt16KHz(nFile) ? 16000 : 32000);
  					else {
@@ -2270,7 +2351,7 @@ index ae4b1cb..210b555 100644
  
  						aStream[nStream] = stream;
  
-@@ -1837,63 +2134,67 @@ cSampleManager::StartStreamedFile(uint32 nFile, uint32 nPos, uint8 nStream)
+@@ -1837,63 +2168,67 @@ cSampleManager::StartStreamedFile(uint32 nFile, uint32 nPos, uint8 nStream)
  							delete stream;
  							aStream[nStream] = NULL;
  						}
@@ -2373,7 +2454,7 @@ index ae4b1cb..210b555 100644
  	return false;
  }
  
-@@ -1902,11 +2203,17 @@ cSampleManager::StopStreamedFile(uint8 nStream)
+@@ -1902,11 +2237,17 @@ cSampleManager::StopStreamedFile(uint8 nStream)
  {
  	ASSERT( nStream < MAX_STREAMS );
  
@@ -2392,7 +2473,7 @@ index ae4b1cb..210b555 100644
  		aStream[nStream] = NULL;
  
  		if ( nStream == 0 )
-@@ -1918,6 +2225,9 @@ int32
+@@ -1918,6 +2259,9 @@ int32
  cSampleManager::GetStreamedFilePosition(uint8 nStream)
  {
  	ASSERT( nStream < MAX_STREAMS );
@@ -2402,7 +2483,7 @@ index ae4b1cb..210b555 100644
  	
  	CStream *stream = aStream[nStream];
  	
-@@ -1961,6 +2271,7 @@ cSampleManager::SetStreamedVolumeAndPan(uint8 nVolume, uint8 nPan, uint8 nEffect
+@@ -1961,6 +2305,7 @@ cSampleManager::SetStreamedVolumeAndPan(uint8 nVolume, uint8 nPan, uint8 nEffect
  		
  	nStreamVolume[nStream] = nVolume;
  	nStreamPan   [nStream] = nPan;
@@ -2410,7 +2491,7 @@ index ae4b1cb..210b555 100644
  	
  	CStream *stream = aStream[nStream];
  	
-@@ -1991,6 +2302,12 @@ bool
+@@ -1991,6 +2336,12 @@ bool
  cSampleManager::IsStreamPlaying(uint8 nStream)
  {
  	ASSERT( nStream < MAX_STREAMS );
@@ -2423,7 +2504,7 @@ index ae4b1cb..210b555 100644
  	
  	CStream *stream = aStream[nStream];
  	
-@@ -2006,6 +2323,29 @@ cSampleManager::IsStreamPlaying(uint8 nStream)
+@@ -2006,6 +2357,29 @@ cSampleManager::IsStreamPlaying(uint8 nStream)
  void
  cSampleManager::Service(void)
  {

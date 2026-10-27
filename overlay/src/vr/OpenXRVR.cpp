@@ -853,6 +853,10 @@ bool gAudioHrtfEnabled = true;
 int gAudioHrtfGeneration;
 // The headset pose sounds are heard from, taken from the last stereo frame.
 CMatrix gAudioListener;
+// Head position relative to the game camera. Audio runs before the next stereo
+// frame, so the position is rebased on the current camera to keep up with the
+// player's motion.
+CVector gAudioListenerCameraOffset;
 uint32 gAudioListenerFrame;
 bool gAudioListenerValid;
 bool gWeaponGripLockEnabled;
@@ -16783,6 +16787,7 @@ void UpdateAudioListener()
 	gAudioListener = left;
 	gAudioListener.GetPosition() =
 		(left.GetPosition()+right.GetPosition())*0.5f;
+	gAudioListenerCameraOffset = gAudioListener.GetPosition()-TheCamera.GetPosition();
 	gAudioListenerFrame = CTimer::GetFrameCounter();
 }
 
@@ -16794,6 +16799,7 @@ bool GetAudioListenerMatrix(CMatrix *listener)
 	   CTimer::GetFrameCounter()-gAudioListenerFrame > 2U)
 		return false;
 	*listener = gAudioListener;
+	listener->GetPosition() = TheCamera.GetPosition()+gAudioListenerCameraOffset;
 	return true;
 }
 
