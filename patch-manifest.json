@@ -913,7 +913,7 @@
                     },
                     {
                         "path":  "tools/vr/tests/wrist-hud-lifecycle-test.cpp",
-                        "sha256":  "5dd29c4b72b8d6d800e387e712a0f3fa0c1d01f390c9e9b7d12494d57aa4d786"
+                        "sha256":  "276faaf8495a0d0861fa27ea75ff892d56d3a1dc841f612a2af88d2defb7c3ea"
                     },
                     {
                         "path":  "tools/vr/tests/wrist-hud-test.cpp",
