@@ -212,6 +212,7 @@ enum eVrMainMenuItem
 	VR_MAIN_HOLSTER_HIGHLIGHTS,
 	VR_MAIN_MANUAL_RELOAD,
 	VR_MAIN_THROWING,
+	VR_MAIN_THROW_STRENGTH,
 	VR_MAIN_SCOPE_AIM,
 	VR_MAIN_AIM_DIRECTION,
 	VR_MAIN_VEHICLE_SETTINGS,
@@ -847,6 +848,7 @@ bool gManualReloadEnabled = false;
 // Throwables fly with the hand's own velocity when the trigger is released,
 // instead of a fixed speed along the aim with a trajectory preview.
 bool gPhysicalThrowingEnabled = true;
+int gThrowStrengthPercent = 100;
 bool gPhysicalScopeAimEnabled = true;
 bool gHeadAimEnabled;
 bool gWeaponGripLockEnabled;
@@ -2538,6 +2540,8 @@ void LoadVrSettings()
 		GetPrivateProfileIntA("VR", "ManualReloading", 0, path) != 0;
 	gPhysicalThrowingEnabled =
 		GetPrivateProfileIntA("VR", "PhysicalThrowing", 1, path) != 0;
+	gThrowStrengthPercent = Min(Max(GetPrivateProfileIntA("VR",
+		"ThrowStrengthPercent", 100, path), 25), 300);
 	gPhysicalScopeAimEnabled =
 		GetPrivateProfileIntA("VR", "PhysicalScopeAim", 1, path) != 0;
 	gHeadAimEnabled =
@@ -7670,6 +7674,8 @@ bool UpdateVrMenuSwapchain()
 		gManualReloadEnabled ? "ON" : "OFF");
 	sprintf(rows[VR_MAIN_THROWING], "THROWING  < %s >",
 		gPhysicalThrowingEnabled ? "PHYSICAL" : "AIMED");
+	sprintf(rows[VR_MAIN_THROW_STRENGTH], "THROW STRENGTH  < %d%% >",
+		gThrowStrengthPercent);
 	sprintf(rows[VR_MAIN_SCOPE_AIM], "PHYSICAL SCOPE AIM  < %s >",
 		gPhysicalScopeAimEnabled ? "ON" : "OFF");
 	sprintf(rows[VR_MAIN_AIM_DIRECTION], "AIM DIRECTION  < %s >",
@@ -7686,7 +7692,9 @@ bool UpdateVrMenuSwapchain()
 	strcpy(rows[VR_MAIN_HOLSTERS], "HOLSTER LOADOUT  < OPEN >");
 	strcpy(rows[VR_MAIN_ABOUT], "ABOUT  < OPEN >");
 	for(int item = 0; item < VR_MENU_ITEM_COUNT; item++){
-		const int y = 145+item*22;
+		// Rows close up as items are added, so the last one stays above the
+		// model-set status lines from y=650 down.
+		const int y = 145+item*Min(22, (640-145)/(int)VR_MENU_ITEM_COUNT);
 		const bool selected = item == gVrMenuSelection;
 		if(selected)
 			FillVrMenuRect(85, y-2, VR_MENU_WIDTH-85, y+18, 25, 95, 135, 245);
@@ -10685,8 +10693,9 @@ bool IsPhysicalThrowableTypeInternal(int weaponType)
 
 // Launch velocity of a physical throw in world units per 50 Hz game tick: the
 // fastest hand velocity of the last 100 ms plus the player's own movement.
-// The game's gravity is twice the real one, so the hand speed is scaled by
-// about sqrt(2) to keep the distance of a real throw.
+// The game's gravity is twice the real one and a controller is far lighter
+// than a real grenade, so at 100% THROW STRENGTH the hand speed is scaled by
+// 2.5: a 10 m/s swing then carries about 30 m.
 CVector BuildPhysicalThrowVelocity(int hand)
 {
 	const ULONGLONG now = GetTickCount64();
@@ -10703,8 +10712,9 @@ CVector BuildPhysicalThrowVelocity(int hand)
 			peak = v;
 		}
 	}
-	CVector velocity = ToGameVector(peak)*(1.4f/50.0f);
-	const float maximum = 0.6f;
+	CVector velocity = ToGameVector(peak)*
+		(2.5f*(float)gThrowStrengthPercent/100.0f/50.0f);
+	const float maximum = 1.2f;	// 60 m/s
 	if(velocity.Magnitude() > maximum)
 		velocity *= maximum/velocity.Magnitude();
 	CPlayerPed *player = FindPlayerPed();
@@ -13944,6 +13954,11 @@ void ChangeVrMenuValue(int direction)
 		gPhysicalThrowingEnabled = !gPhysicalThrowingEnabled;
 		SaveVrSetting("PhysicalThrowing", gPhysicalThrowingEnabled);
 		break;
+	case VR_MAIN_THROW_STRENGTH:
+		gThrowStrengthPercent = Min(Max(
+			gThrowStrengthPercent+direction*10, 25), 300);
+		SaveVrSetting("ThrowStrengthPercent", gThrowStrengthPercent);
+		break;
 	case VR_MAIN_SCOPE_AIM:
 		gPhysicalScopeAimEnabled = !gPhysicalScopeAimEnabled;
 		SaveVrSetting("PhysicalScopeAim", gPhysicalScopeAimEnabled);
@@ -14136,7 +14151,8 @@ bool IsVrMenuValueRepeatable()
 	if(gVrLocomotionMenuVisible)
 		return gVrLocomotionMenuSelection ==
 			VR_LOCOMOTION_TURN_SENSITIVITY;
-	return gVrMenuSelection == VR_MAIN_WEAPON_HAPTICS_STRENGTH;
+	return gVrMenuSelection == VR_MAIN_WEAPON_HAPTICS_STRENGTH ||
+		gVrMenuSelection == VR_MAIN_THROW_STRENGTH;
 }
 
 bool ShouldApplyVrMenuValueInput(bool down, bool wasDown,
