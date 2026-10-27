@@ -211,6 +211,7 @@ enum eVrMainMenuItem
 	VR_MAIN_WEAPON_HAPTICS_STRENGTH,
 	VR_MAIN_HOLSTER_HIGHLIGHTS,
 	VR_MAIN_MANUAL_RELOAD,
+	VR_MAIN_THROWING,
 	VR_MAIN_SCOPE_AIM,
 	VR_MAIN_AIM_DIRECTION,
 	VR_MAIN_VEHICLE_SETTINGS,
@@ -843,6 +844,9 @@ bool gWeaponHapticsEnabled = true;
 int gWeaponHapticsStrengthPercent = 100;
 bool gWeaponHolsterHighlightsEnabled = false;
 bool gManualReloadEnabled = false;
+// Throwables fly with the hand's own velocity when the trigger is released,
+// instead of a fixed speed along the aim with a trajectory preview.
+bool gPhysicalThrowingEnabled = true;
 bool gPhysicalScopeAimEnabled = true;
 bool gHeadAimEnabled;
 bool gWeaponGripLockEnabled;
@@ -2094,6 +2098,16 @@ XrPosef gTrackedHandAimPose[EYE_COUNT];
 bool gTrackedHandAimPoseValid[EYE_COUNT];
 XrVector3f gTrackedHandLinearVelocity[EYE_COUNT];
 XrVector3f gTrackedHandAngularVelocity[EYE_COUNT];
+// Recent controller velocities, so a physical throw takes the peak of the swing
+// even when the trigger is released after the hand has started to slow down.
+struct HandVelocitySample
+{
+	ULONGLONG time;
+	XrVector3f velocity;
+};
+enum { HAND_VELOCITY_HISTORY = 16 };
+HandVelocitySample gHandVelocityHistory[EYE_COUNT][HAND_VELOCITY_HISTORY];
+int gHandVelocityHistoryNext[EYE_COUNT];
 float gTrackedHandGrip[EYE_COUNT];
 float gTrackedHandTrigger[EYE_COUNT];
 int gRenderScaleIndex = VR_RENDER_SCALE_DEFAULT;
@@ -2522,6 +2536,8 @@ void LoadVrSettings()
 		GetPrivateProfileIntA("VR", "HolsterHighlights", 0, path) != 0;
 	gManualReloadEnabled =
 		GetPrivateProfileIntA("VR", "ManualReloading", 0, path) != 0;
+	gPhysicalThrowingEnabled =
+		GetPrivateProfileIntA("VR", "PhysicalThrowing", 1, path) != 0;
 	gPhysicalScopeAimEnabled =
 		GetPrivateProfileIntA("VR", "PhysicalScopeAim", 1, path) != 0;
 	gHeadAimEnabled =
@@ -7652,6 +7668,8 @@ bool UpdateVrMenuSwapchain()
 		gWeaponHolsterHighlightsEnabled ? "ON" : "OFF");
 	sprintf(rows[VR_MAIN_MANUAL_RELOAD], "MANUAL RELOADING  < %s >",
 		gManualReloadEnabled ? "ON" : "OFF");
+	sprintf(rows[VR_MAIN_THROWING], "THROWING  < %s >",
+		gPhysicalThrowingEnabled ? "PHYSICAL" : "AIMED");
 	sprintf(rows[VR_MAIN_SCOPE_AIM], "PHYSICAL SCOPE AIM  < %s >",
 		gPhysicalScopeAimEnabled ? "ON" : "OFF");
 	sprintf(rows[VR_MAIN_AIM_DIRECTION], "AIM DIRECTION  < %s >",
@@ -10665,6 +10683,39 @@ bool IsPhysicalThrowableTypeInternal(int weaponType)
 	}
 }
 
+// Launch velocity of a physical throw in world units per 50 Hz game tick: the
+// fastest hand velocity of the last 100 ms plus the player's own movement.
+// The game's gravity is twice the real one, so the hand speed is scaled by
+// about sqrt(2) to keep the distance of a real throw.
+CVector BuildPhysicalThrowVelocity(int hand)
+{
+	const ULONGLONG now = GetTickCount64();
+	XrVector3f peak = { 0.0f, 0.0f, 0.0f };
+	float peakSpeed = 0.0f;
+	for(int index = 0; index < HAND_VELOCITY_HISTORY; index++){
+		const HandVelocitySample &sample = gHandVelocityHistory[hand][index];
+		if(sample.time == 0 || now-sample.time > 100ULL)
+			continue;
+		const XrVector3f &v = sample.velocity;
+		const float speed = sqrtf(v.x*v.x+v.y*v.y+v.z*v.z);
+		if(speed > peakSpeed){
+			peakSpeed = speed;
+			peak = v;
+		}
+	}
+	CVector velocity = ToGameVector(peak)*(1.4f/50.0f);
+	const float maximum = 0.6f;
+	if(velocity.Magnitude() > maximum)
+		velocity *= maximum/velocity.Magnitude();
+	CPlayerPed *player = FindPlayerPed();
+	if(player)
+		velocity += player->m_vecMoveSpeed;
+	// A hand that is not moving lets the throwable drop.
+	if(velocity.MagnitudeSqr() < 0.0001f)
+		velocity = gBaseCamera.GetUp()*-0.01f;
+	return velocity;
+}
+
 CVector BuildTrackedThrowableVelocity(int weaponType, CVector direction)
 {
 	if(!IsPhysicalThrowableTypeInternal(weaponType) ||
@@ -10679,14 +10730,16 @@ CVector BuildTrackedThrowableVelocity(int weaponType, CVector direction)
 }
 
 bool BuildTrackedThrowableLaunch(int weaponType, const CVector &requestedSource,
-	CVector direction, CVector *source, CVector *velocity)
+	CVector direction, CVector *source, CVector *velocity,
+	const CVector *physicalVelocity = nil)
 {
 	if(!source || !velocity || !IsPhysicalThrowableTypeInternal(weaponType) ||
 	   direction.MagnitudeSqr() < 0.0001f)
 		return false;
 	direction.Normalise();
 	*source = requestedSource;
-	*velocity = BuildTrackedThrowableVelocity(weaponType, direction);
+	*velocity = physicalVelocity ? *physicalVelocity :
+		BuildTrackedThrowableVelocity(weaponType, direction);
 
 	// A tracked controller can physically pass through a wall. Clamp the spawn
 	// point to the visible side of any geometry between the player's head and the
@@ -12248,6 +12301,14 @@ void LocateTrackedHands()
 			gActions.gripSpace[hand], hand, gTrackedHandPose[hand],
 			&gTrackedHandLinearVelocity[hand],
 			&gTrackedHandAngularVelocity[hand]);
+		if(gTrackedHandPoseValid[hand]){
+			HandVelocitySample &sample = gHandVelocityHistory[hand][
+				gHandVelocityHistoryNext[hand]];
+			sample.time = GetTickCount64();
+			sample.velocity = gTrackedHandLinearVelocity[hand];
+			gHandVelocityHistoryNext[hand] =
+				(gHandVelocityHistoryNext[hand]+1) % HAND_VELOCITY_HISTORY;
+		}
 		gTrackedHandAimPoseValid[hand] = LocateHandAction(gActions.aimPose,
 			gActions.aimSpace[hand], hand, gTrackedHandAimPose[hand]);
 	}
@@ -13878,6 +13939,10 @@ void ChangeVrMenuValue(int direction)
 			for(int hand = 0; hand < EYE_COUNT; hand++)
 				gManualReload[hand] = ManualReloadState();
 		SaveVrSetting("ManualReloading", gManualReloadEnabled);
+		break;
+	case VR_MAIN_THROWING:
+		gPhysicalThrowingEnabled = !gPhysicalThrowingEnabled;
+		SaveVrSetting("PhysicalThrowing", gPhysicalThrowingEnabled);
 		break;
 	case VR_MAIN_SCOPE_AIM:
 		gPhysicalScopeAimEnabled = !gPhysicalScopeAimEnabled;
@@ -18395,7 +18460,8 @@ void SetTrackedThrowablePreviewActive(int hand, bool active)
 
 bool IsTrackedThrowablePreviewActive(int hand)
 {
-	return hand >= 0 && hand < EYE_COUNT &&
+	// A physical throw has no aimed path to preview.
+	return !gPhysicalThrowingEnabled && hand >= 0 && hand < EYE_COUNT &&
 		gTrackedThrowablePreviewActive[hand] &&
 		IsTrackedWeaponTriggerPressed(hand);
 }
@@ -18502,8 +18568,11 @@ bool GetActiveTrackedThrowableLaunch(CVector *source, CVector *velocity)
 	   !gActiveTrackedFireAimValid ||
 	   !IsPhysicalThrowableTypeInternal(gActiveTrackedFireWeaponType))
 		return false;
+	const CVector physicalVelocity = gPhysicalThrowingEnabled ?
+		BuildPhysicalThrowVelocity(gActiveTrackedFireHand) : CVector(0.0f, 0.0f, 0.0f);
 	return BuildTrackedThrowableLaunch(gActiveTrackedFireWeaponType,
-		gActiveTrackedFireSource, gActiveTrackedFireDirection, source, velocity);
+		gActiveTrackedFireSource, gActiveTrackedFireDirection, source, velocity,
+		gPhysicalThrowingEnabled ? &physicalVelocity : nil);
 }
 
 bool GetTrackedHandMatrix(int hand, CMatrix *handMatrix, float *grip, float *trigger)
