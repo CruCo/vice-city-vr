@@ -773,7 +773,7 @@
                     },
                     {
                         "path":  "src/vr/OpenXRVR.cpp",
-                        "sha256":  "e340d3a5dee070467ee354cb08801f7cfb1a148f9d782111942fdfa0342f2770"
+                        "sha256":  "45f745a4d9810a27e6abaa341ead35f16f3f7fca63783fe3458c0df5f8980e5f"
                     },
                     {
                         "path":  "src/vr/OpenXRWristHud.h",

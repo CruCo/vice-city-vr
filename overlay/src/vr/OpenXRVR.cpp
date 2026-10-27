@@ -14783,11 +14783,17 @@ bool BuildDroppedWeaponMatrix(int hand, ULONGLONG now, CMatrix *matrix)
 	return true;
 }
 
+void ClearWeaponForegripCarry(int hand);
+
 void GiveWeaponToHand(int hand, int slot, const char *reason)
 {
 	if(hand < 0 || hand >= EYE_COUNT || slot < 0)
 		return;
 	ClearWeaponSupportForHand(hand);
+	// Every new assignment starts as an ordinary grip hold; HandWeaponToForegrip
+	// sets the carry again after this call. A stale carry would, for example,
+	// keep the trigger of a mounted mission gun from firing.
+	ClearWeaponForegripCarry(hand);
 	gHeldWeaponSlot[hand] = slot;
 	gWeaponHolsterSelection[hand] = slot;
 	gTrackedWeaponRenderMatrixSlot[hand] = -1;
