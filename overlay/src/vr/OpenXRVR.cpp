@@ -579,6 +579,13 @@ bool gTouchWasConnected;
 bool gTrackedWeaponTriggerPressed[EYE_COUNT];
 bool gTrackedWeaponTriggerJustPressed[EYE_COUNT];
 bool gTrackedWeaponTriggerJustReleased[EYE_COUNT];
+// Physical throw gesture of a held throwable. The trigger arms it; the throw
+// follows when grip and trigger are let go together, or when the trigger is
+// let go after the grip.
+bool gThrowArmed[EYE_COUNT];
+bool gThrowHeldByTrigger[EYE_COUNT];
+ULONGLONG gThrowTriggerReleasedAt[EYE_COUNT];
+ULONGLONG gThrowRequestedAt[EYE_COUNT];
 // The remote-grenade controller is an auxiliary tracked prop rather than a
 // Vice City inventory weapon.  Keeping it outside gHeldWeaponSlot preserves the
 // projectile in one hand, permits several charges to be thrown in succession,
@@ -14975,6 +14982,89 @@ bool UpdateAttachedMissionWeaponInput(const float *grips)
 	return true;
 }
 
+// Grip and trigger count as let go together within this time.
+enum { THROW_RELEASE_WINDOW_MS = 200 };
+
+bool IsPhysicalThrowGestureHand(int hand)
+{
+	return gPhysicalThrowingEnabled && hand >= 0 && hand < EYE_COUNT &&
+		gHeldWeaponSlot[hand] == WEAPONSLOT_PROJECTILE &&
+		IsPhysicalThrowableTypeInternal(
+			GetVrWeaponTypeForSlot(gHeldWeaponSlot[hand]));
+}
+
+void ResetPhysicalThrowGesture(int hand)
+{
+	gThrowArmed[hand] = false;
+	gThrowHeldByTrigger[hand] = false;
+	gThrowTriggerReleasedAt[hand] = 0;
+	gThrowRequestedAt[hand] = 0;
+}
+
+// Called when the grip of a held weapon is let go. Returns true while a
+// throwable stays in the hand for the throw instead of being dropped. The
+// trigger state is still the previous frame's here, so a trigger let go in
+// this same frame counts as let go together with the grip.
+bool HoldThrowableForPhysicalThrow(int hand, ULONGLONG now)
+{
+	if(!IsPhysicalThrowGestureHand(hand))
+		return false;
+	if(gThrowHeldByTrigger[hand] || gThrowRequestedAt[hand] != 0)
+		return true;
+	if(!gThrowArmed[hand])
+		return false;
+	if(gTrackedWeaponTriggerPressed[hand]){
+		gThrowHeldByTrigger[hand] = true;
+		return true;
+	}
+	if(gThrowTriggerReleasedAt[hand] != 0 &&
+	   now-gThrowTriggerReleasedAt[hand] <= THROW_RELEASE_WINDOW_MS){
+		gThrowRequestedAt[hand] = now;
+		return true;
+	}
+	return false;
+}
+
+// Runs after the trigger states of this frame are known.
+void UpdatePhysicalThrowGesture(float leftGrip, float rightGrip)
+{
+	const ULONGLONG now = GetTickCount64();
+	const float grips[EYE_COUNT] = { leftGrip, rightGrip };
+	for(int hand = 0; hand < EYE_COUNT; hand++){
+		if(!IsPhysicalThrowGestureHand(hand)){
+			ResetPhysicalThrowGesture(hand);
+			continue;
+		}
+		if(gThrowRequestedAt[hand] != 0){
+			// The throw is fired by the player ped update; drop a request it
+			// never picked up, for example while the game is paused.
+			if(now-gThrowRequestedAt[hand] > 100ULL)
+				ResetPhysicalThrowGesture(hand);
+			continue;
+		}
+		if(gTrackedWeaponTriggerJustPressed[hand]){
+			gThrowArmed[hand] = true;
+			gThrowTriggerReleasedAt[hand] = 0;
+		}
+		// Gripping again while only the trigger holds it cancels the throw.
+		if(gThrowHeldByTrigger[hand] && grips[hand] >= 0.65f)
+			gThrowHeldByTrigger[hand] = false;
+		if(gThrowArmed[hand] && gTrackedWeaponTriggerJustReleased[hand]){
+			if(gThrowHeldByTrigger[hand]){
+				gThrowHeldByTrigger[hand] = false;
+				gThrowRequestedAt[hand] = now;
+			}else
+				gThrowTriggerReleasedAt[hand] = now;
+		}
+		// The trigger alone was let go and the grip kept holding.
+		if(gThrowTriggerReleasedAt[hand] != 0 &&
+		   now-gThrowTriggerReleasedAt[hand] > THROW_RELEASE_WINDOW_MS){
+			gThrowArmed[hand] = false;
+			gThrowTriggerReleasedAt[hand] = 0;
+		}
+	}
+}
+
 void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHands)
 {
 	const ULONGLONG now = GetTickCount64();
@@ -15155,7 +15245,8 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 		// a gun that the player is still physically holding. Grip Lock blocks an
 		// ordinary release, but a fresh release edge inside this weapon's own socket
 		// is an explicit holster gesture and must remain available in that mode.
-		if(gHeldWeaponSlot[hand] >= 0 && grip <= 0.30f){
+		if(gHeldWeaponSlot[hand] >= 0 && grip <= 0.30f &&
+		   !HoldThrowableForPhysicalThrow(hand, now)){
 			const int releasedSlot = gHeldWeaponSlot[hand];
 			const bool holsterRelease = gWeaponHolsterGripDown[hand] &&
 				IsHeldWeaponNearAssignedHolster(hand, releasedSlot);
@@ -16155,6 +16246,7 @@ bool ApplyTouchInput(CControllerState *state)
 			!gTrackedWeaponTriggerPressed[hand];
 		gTrackedWeaponTriggerPressed[hand]=weaponTriggerPressed;
 	}
+	UpdatePhysicalThrowGesture(leftGrip, rightGrip);
 	UpdatePhysicalMeleeInput(serviceChord ? allTrackedHands :
 		(trackedDetonatorHands | vehicleCapturedHands));
 	const bool legacyVrMenuShortcut=bothGrips && menu;
@@ -18575,6 +18667,16 @@ bool GetActiveTrackedWeaponAim(CVector *source, CVector *direction)
 		return false;
 	*source = gActiveTrackedFireSource;
 	*direction = gActiveTrackedFireDirection;
+	return true;
+}
+
+bool IsPhysicalThrowingEnabled(){ return gPhysicalThrowingEnabled; }
+
+bool ConsumeTrackedThrowRelease(int hand)
+{
+	if(hand < 0 || hand >= EYE_COUNT || gThrowRequestedAt[hand] == 0)
+		return false;
+	ResetPhysicalThrowGesture(hand);
 	return true;
 }
 
