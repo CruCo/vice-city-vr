@@ -727,6 +727,8 @@ CVector gTrackedScopeReticleTarget;
 float gTrackedScopeZoom[2] = { 2.5f, 3.0f };
 ULONGLONG gTrackedScopeZoomShownAt;
 ULONGLONG gTrackedScopeZoomLastInput;
+// Eye behind the active optic, or -1 while both eyes see it (camera viewfinder).
+int gTrackedScopeEye = -1;
 struct PhysicalMeleeStrike
 {
 	bool pending;
@@ -10612,10 +10614,11 @@ float GetTrackedScopeZoomInternal()
 	}
 }
 
-void ApplyTrackedScopeZoomToUv(float *scaleX, float *scaleY,
+void ApplyTrackedScopeZoomToUv(int eyeIndex, float *scaleX, float *scaleY,
 	float *offsetX, float *offsetY)
 {
-	if(!scaleX || !scaleY || !offsetX || !offsetY)
+	if(!scaleX || !scaleY || !offsetX || !offsetY ||
+	   (gTrackedScopeEye >= 0 && eyeIndex != gTrackedScopeEye))
 		return;
 	const float zoom = GetTrackedScopeZoomInternal();
 	if(zoom <= 1.0f)
@@ -11548,7 +11551,7 @@ void ResolveTrackedForegroundEye(int eyeIndex,
 	float eyeScaleY = (up+down)/(2.0f*gSourceTanY);
 	float eyeOffsetX = (gSourceTanX-left)/(2.0f*gSourceTanX);
 	float eyeOffsetY = (gSourceTanY-up)/(2.0f*gSourceTanY);
-	ApplyTrackedScopeZoomToUv(&eyeScaleX, &eyeScaleY,
+	ApplyTrackedScopeZoomToUv(eyeIndex, &eyeScaleX, &eyeScaleY,
 		&eyeOffsetX, &eyeOffsetY);
 	const float regionScaleX = (float)source->width/(float)parent->width;
 	const float regionScaleY = (float)source->height/(float)parent->height;
@@ -11638,7 +11641,8 @@ bool DrawEyeFxaa(EyeBuffer &eye, int eyeIndex)
 	float uvOffsetX = (gSourceTanX - left) / (2.0f * gSourceTanX);
 	// D3D textures use a top-left origin, unlike the GL source used below.
 	float uvOffsetY = (gSourceTanY - up) / (2.0f * gSourceTanY);
-	ApplyTrackedScopeZoomToUv(&uvScaleX, &uvScaleY, &uvOffsetX, &uvOffsetY);
+	ApplyTrackedScopeZoomToUv(eyeIndex, &uvScaleX, &uvScaleY,
+		&uvOffsetX, &uvOffsetY);
 	uint32 colorMode = 0;
 	float blurColor[4] = { 0.0f, 0.0f, 0.0f, 30.0f/255.0f };
 	float contrastMult[3] = { 1.0f, 1.0f, 1.0f };
@@ -11750,7 +11754,8 @@ bool DrawEyeDlaa(EyeBuffer &eye, int eyeIndex, RwCamera *camera,
 	float uvScaleY = (up + down) / (2.0f * gSourceTanY);
 	float uvOffsetX = (gSourceTanX - left) / (2.0f * gSourceTanX);
 	float uvOffsetY = (gSourceTanY - up) / (2.0f * gSourceTanY);
-	ApplyTrackedScopeZoomToUv(&uvScaleX, &uvScaleY, &uvOffsetX, &uvOffsetY);
+	ApplyTrackedScopeZoomToUv(eyeIndex, &uvScaleX, &uvScaleY,
+		&uvOffsetX, &uvOffsetY);
 	uint32 colorMode = 0;
 	float blurColor[4] = { 0.0f, 0.0f, 0.0f, 30.0f/255.0f };
 	float contrastMult[3] = { 1.0f, 1.0f, 1.0f };
@@ -11852,7 +11857,7 @@ bool DrawEyeFsr2Output(EyeBuffer &eye, int eyeIndex,
 	float uvScaleY = (up + down) / (2.0f * gSourceTanY);
 	float uvOffsetX = (gSourceTanX - left) / (2.0f * gSourceTanX);
 	float uvOffsetY = (gSourceTanY - up) / (2.0f * gSourceTanY);
-	ApplyTrackedScopeZoomToUv(&uvScaleX, &uvScaleY,
+	ApplyTrackedScopeZoomToUv(eyeIndex, &uvScaleX, &uvScaleY,
 		&uvOffsetX, &uvOffsetY);
 	uint32 colorMode = 0;
 	float blurColor[4] = { 0.0f, 0.0f, 0.0f, 30.0f/255.0f };
@@ -12126,7 +12131,7 @@ bool DrawEyeFxaa(EyeBuffer &eye, int eyeIndex)
 	float uvScaleY=(up+down)/(2.0f*gSourceTanY);
 	float uvOffsetX=(gSourceTanX-left)/(2.0f*gSourceTanX);
 	float uvOffsetY=(gSourceTanY-down)/(2.0f*gSourceTanY);
-	ApplyTrackedScopeZoomToUv(&uvScaleX,&uvScaleY,&uvOffsetX,&uvOffsetY);
+	ApplyTrackedScopeZoomToUv(eyeIndex,&uvScaleX,&uvScaleY,&uvOffsetX,&uvOffsetY);
 	glUniform1i(gFxaaTextureUniform,0);
 	glUniform2f(gFxaaInverseSizeUniform,1.0f/eye.swapchain.width,1.0f/eye.swapchain.height);
 	glUniform2f(gFxaaUvScaleUniform,uvScaleX,uvScaleY);
@@ -18003,7 +18008,10 @@ void UpdateTrackedScopeReticleTarget()
 	if((!physicalScopeNeedsTarget && !HasTrackedHeadAimWeaponInternal()) ||
 	   !gFramePrepared || !IsTrackedScopeGameplaySafe())
 		return;
-	const XrVector3f eyeCentre = {
+	// A one-eyed optic centres its reticle on that eye's view axis.
+	const XrVector3f eyeCentre = physicalScopeNeedsTarget &&
+		gTrackedScopeEye >= 0 ?
+		gLocatedViews[gTrackedScopeEye].pose.position : XrVector3f{
 		(gLocatedViews[0].pose.position.x+gLocatedViews[1].pose.position.x)*0.5f,
 		(gLocatedViews[0].pose.position.y+gLocatedViews[1].pose.position.y)*0.5f,
 		(gLocatedViews[0].pose.position.z+gLocatedViews[1].pose.position.z)*0.5f
@@ -18340,6 +18348,27 @@ bool GetTrackedScopeMetrics(int hand, int weaponType, bool relaxed,
 	return true;
 }
 
+// Picks the eye that looks through the optic: the one closer to the weapon's
+// sight line, or the eye on the side of the weapon hand if there is no line.
+int FindTrackedScopeEyeInternal(int hand, int weaponType)
+{
+	if(weaponType == WEAPONTYPE_CAMERA)
+		return -1;
+	CVector sightPosition, sightDirection;
+	if(!gFramePrepared ||
+	   !BuildTrackedWeaponAimInternal(hand, weaponType, &sightPosition,
+	   &sightDirection, false) || sightDirection.MagnitudeSqr() < 0.0001f)
+		return hand == 0 ? 0 : 1;
+	sightDirection.Normalise();
+	float distance[EYE_COUNT];
+	for(int eye = 0; eye < EYE_COUNT; eye++){
+		const CVector toEye = gBaseCamera.GetPosition()+
+			ToGameVector(gLocatedViews[eye].pose.position)-sightPosition;
+		distance[eye] = CrossProduct(toEye, sightDirection).Magnitude();
+	}
+	return distance[0] < distance[1] ? 0 : 1;
+}
+
 void SetTrackedScopeStateInternal(int hand, int weaponType)
 {
 	if(gTrackedScopeHand == hand && gTrackedScopeWeaponType == weaponType)
@@ -18355,10 +18384,12 @@ void SetTrackedScopeStateInternal(int hand, int weaponType)
 	for(int aimHand = 0; aimHand < EYE_COUNT; aimHand++)
 		gTrackedAimCacheValid[aimHand] = false;
 	ResetTemporalAaHistory();
+	gTrackedScopeEye = hand >= 0 ?
+		FindTrackedScopeEyeInternal(hand, weaponType) : -1;
 	if(hand >= 0){
 		gTrackedScopeZoomShownAt = GetTickCount64();
-		debug("[OpenXR] Physical optic active: hand=%d weapon=%d\n",
-			hand, weaponType);
+		debug("[OpenXR] Physical optic active: hand=%d weapon=%d eye=%d\n",
+			hand, weaponType, gTrackedScopeEye);
 	}else if(wasActive)
 		debug("[OpenXR] Physical optic released\n");
 }
@@ -19110,6 +19141,18 @@ bool SubmitStereoFrame(RwCamera *camera)
 		const bool trackedScope = IsTrackedScopeActive();
 		hud.pose.position.x=trackedScope?0.0f:gHudOffsetXCm*0.01f;
 		hud.pose.position.y=trackedScope?0.0f:gHudOffsetYCm*0.01f;
+		if(trackedScope && gTrackedScopeEye >= 0){
+			// The mask and reticle sit 1.6 m away. Seen with both eyes they
+			// double while the eyes focus on a distant target, so only the
+			// eye behind the optic gets them, centred on its view axis.
+			const XrVector3f &a=gLocatedViews[0].pose.position;
+			const XrVector3f &b=gLocatedViews[1].pose.position;
+			const float halfIpd=0.5f*sqrtf((b.x-a.x)*(b.x-a.x)+
+				(b.y-a.y)*(b.y-a.y)+(b.z-a.z)*(b.z-a.z));
+			hud.eyeVisibility=gTrackedScopeEye==0?
+				XR_EYE_VISIBILITY_LEFT:XR_EYE_VISIBILITY_RIGHT;
+			hud.pose.position.x=gTrackedScopeEye==0?-halfIpd:halfIpd;
+		}
 		hud.pose.position.z=-1.6f;
 		if(trackedScope){
 			// Cover the complete Quest view while an opaque optic mask is active.
