@@ -10007,8 +10007,10 @@ uint32 UpdateImmersiveCarInput(const float *grips, uint32 blockedHands)
 				ToGameVector(gTrackedHandPose[hand].position);
 		else
 			handPositions[hand] = CVector(0.0f, 0.0f, 0.0f);
-		// A free hand measures against its nearest neutral socket: its own side
-		// or a 12/6 o'clock socket the other hand is not already holding.
+		// A free hand measures against its nearest socket on the turned wheel,
+		// where the grip boxes are drawn: its own side or a 12/6 o'clock socket
+		// the other hand is not already holding. Measuring on the neutral wheel
+		// would pick a socket a quarter turn away once the wheel is turned.
 		// Iterating the hands in order makes a same-frame double grab of the
 		// shared socket resolve to the left hand.
 		int nearestSocket = gCarWheelSocket[hand];
@@ -10021,7 +10023,7 @@ uint32 UpdateImmersiveCarInput(const float *grips, uint32 blockedHands)
 					continue;
 				CMatrix candidate;
 				if(!BuildCarWheelSocketMatrixInternal(hand, socket, &candidate,
-				   false))
+				   true))
 					continue;
 				const float distance =
 					(handPositions[hand]-candidate.GetPosition()).Magnitude();
@@ -10032,7 +10034,7 @@ uint32 UpdateImmersiveCarInput(const float *grips, uint32 blockedHands)
 			}
 		}
 		anchorValid[hand] = BuildCarWheelSocketMatrixInternal(hand,
-			nearestSocket, &anchors[hand], false);
+			nearestSocket, &anchors[hand], true);
 		gCarWheelDistance[hand] =
 			anchorValid[hand] && gTrackedHandPoseValid[hand] ?
 			(handPositions[hand]-anchors[hand].GetPosition()).Magnitude() :
