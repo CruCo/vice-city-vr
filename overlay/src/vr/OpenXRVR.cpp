@@ -716,8 +716,12 @@ CMatrix gDroppedWeaponMatrix[EYE_COUNT];
 CVector gDroppedWeaponLinearVelocity[EYE_COUNT];
 CVector gDroppedWeaponAngularVelocity[EYE_COUNT];
 ULONGLONG gDroppedWeaponStartTime[EYE_COUNT];
-ULONGLONG gDroppedWeaponSimTime[EYE_COUNT];
+double gDroppedWeaponSimTime[EYE_COUNT];	// PerfNowMs
 ULONGLONG gDroppedWeaponRestTime[EYE_COUNT];
+// While sliding on a floor the gun keeps probing that floor, so it stays in
+// contact instead of falling a little and snapping back every few steps.
+bool gDroppedWeaponGrounded[EYE_COUNT];
+CVector gDroppedWeaponGroundNormal[EYE_COUNT];
 int gActiveTrackedFireHand = -1;
 int gActiveTrackedFireWeaponType = -1;
 bool gActiveTrackedFireAimValid;
@@ -2116,7 +2120,7 @@ XrVector3f gTrackedHandAngularVelocity[EYE_COUNT];
 // even when the trigger is released after the hand has started to slow down.
 struct HandVelocitySample
 {
-	ULONGLONG time;
+	double time;	// PerfNowMs
 	XrVector3f velocity;
 	XrQuaternionf orientation;
 };
@@ -10715,7 +10719,7 @@ static const float PHYSICAL_THROW_MAX_SPEED = 1.2f;	// 60 m/s
 // The fastest controller velocity of the last 100 ms, in m/s along game axes.
 CVector GetPeakHandVelocity(int hand)
 {
-	const ULONGLONG now = GetTickCount64();
+	const double now = PerfNowMs();
 	XrVector3f peak = { 0.0f, 0.0f, 0.0f };
 	float peakSpeed = 0.0f;
 	for(int index = 0; index < HAND_VELOCITY_HISTORY; index++){
@@ -10737,7 +10741,7 @@ CVector GetPeakHandVelocity(int hand)
 // one fixed axis.
 CVector GetRecentHandAngularVelocity(int hand)
 {
-	const ULONGLONG now = GetTickCount64();
+	const double now = PerfNowMs();
 	const HandVelocitySample *newest = nil, *oldest = nil;
 	for(int index = 0; index < HAND_VELOCITY_HISTORY; index++){
 		const HandVelocitySample &sample = gHandVelocityHistory[hand][index];
@@ -10748,7 +10752,7 @@ CVector GetRecentHandAngularVelocity(int hand)
 		if(!oldest || sample.time < oldest->time)
 			oldest = &sample;
 	}
-	if(!newest || newest->time-oldest->time < 5)
+	if(!newest || newest->time-oldest->time < 5.0)
 		return CVector(0.0f, 0.0f, 0.0f);
 	// newest = delta*oldest, so delta = newest*conjugate(oldest).
 	const XrQuaternionf &a = oldest->orientation;
@@ -10762,7 +10766,7 @@ CVector GetRecentHandAngularVelocity(int hand)
 	if(sine < 0.0001f)
 		return CVector(0.0f, 0.0f, 0.0f);
 	const float angle = 2.0f*atan2f(sine, delta.w);
-	const float seconds = (float)(newest->time-oldest->time)/1000.0f;
+	const float seconds = (float)((newest->time-oldest->time)/1000.0);
 	const float scale = angle/(sine*seconds);
 	const XrVector3f spin = { delta.x*scale, delta.y*scale, delta.z*scale };
 	return ToGameVector(spin);
@@ -12373,7 +12377,7 @@ void LocateTrackedHands()
 		if(gTrackedHandPoseValid[hand]){
 			HandVelocitySample &sample = gHandVelocityHistory[hand][
 				gHandVelocityHistoryNext[hand]];
-			sample.time = GetTickCount64();
+			sample.time = PerfNowMs();
 			sample.velocity = gTrackedHandLinearVelocity[hand];
 			sample.orientation = gTrackedHandPose[hand].orientation;
 			gHandVelocityHistoryNext[hand] =
@@ -14849,7 +14853,7 @@ static const float DROPPED_WEAPON_RADIUS = 0.05f;
 static const float DROPPED_WEAPON_BOUNCE_SPEED = 1.0f;
 static const float DROPPED_WEAPON_RESTITUTION = 0.35f;
 static const float DROPPED_WEAPON_IMPACT_FRICTION = 0.6f;
-static const float DROPPED_WEAPON_SLIDE_BRAKING = 6.0f;	// m/s^2
+static const float DROPPED_WEAPON_SLIDE_BRAKING = 6.0f;	// m/s^2 on a level floor
 static const float DROPPED_WEAPON_REST_SPEED = 0.15f;
 
 void StartDroppedWeapon(int hand, int slot)
@@ -14892,8 +14896,9 @@ void StartDroppedWeapon(int hand, int slot)
 		gDroppedWeaponAngularVelocity[hand] *= DROPPED_WEAPON_MAX_SPIN/angularSpeed;
 	gDroppedWeaponSlot[hand] = slot;
 	gDroppedWeaponStartTime[hand] = GetTickCount64();
-	gDroppedWeaponSimTime[hand] = gDroppedWeaponStartTime[hand];
+	gDroppedWeaponSimTime[hand] = PerfNowMs();
 	gDroppedWeaponRestTime[hand] = 0;
+	gDroppedWeaponGrounded[hand] = false;
 	gTrackedWeaponRenderMatrixSlot[hand] = -1;
 	InvalidatePhysicalMeleeWeaponMatrix(hand);
 	ResetPhysicalMeleeMotion(hand);
@@ -14905,16 +14910,19 @@ void ClearDroppedWeapon(int hand)
 		return;
 	gDroppedWeaponSlot[hand] = -1;
 	gDroppedWeaponStartTime[hand] = 0;
-	gDroppedWeaponSimTime[hand] = 0;
+	gDroppedWeaponSimTime[hand] = 0.0;
 	gDroppedWeaponRestTime[hand] = 0;
+	gDroppedWeaponGrounded[hand] = false;
 	gDroppedWeaponLinearVelocity[hand] = CVector(0.0f, 0.0f, 0.0f);
 	gDroppedWeaponAngularVelocity[hand] = CVector(0.0f, 0.0f, 0.0f);
 }
 
 bool IsDroppedWeaponExpired(int hand, ULONGLONG now)
 {
+	if(now < gDroppedWeaponStartTime[hand])
+		return false;
 	return now-gDroppedWeaponStartTime[hand] >= DROPPED_WEAPON_LIFETIME_MS ||
-		(gDroppedWeaponRestTime[hand] != 0 &&
+		(gDroppedWeaponRestTime[hand] != 0 && now >= gDroppedWeaponRestTime[hand] &&
 		 now-gDroppedWeaponRestTime[hand] >= DROPPED_WEAPON_REST_MS);
 }
 
@@ -14928,10 +14936,17 @@ void RotateDroppedWeapon(CMatrix *matrix, const CVector &axis, float angle)
 	matrix->GetUp().Normalise();
 }
 
+void LimitDroppedWeaponSpin(CVector *spin)
+{
+	const float speed = spin->Magnitude();
+	if(speed > DROPPED_WEAPON_MAX_SPIN)
+		*spin *= DROPPED_WEAPON_MAX_SPIN/speed;
+}
+
 // One step of the flight: gravity, a world line test along the step, and a
 // bounce, slide or rest on what it hits. Peds are not tested, so the gun
-// doesn't land on the player.
-void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
+// doesn't land on the player. now is the tick time for the rest timer.
+void StepDroppedWeapon(int hand, float dt, ULONGLONG now)
 {
 	CMatrix &matrix = gDroppedWeaponMatrix[hand];
 	CVector &velocity = gDroppedWeaponLinearVelocity[hand];
@@ -14957,17 +14972,36 @@ void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
 			true, true, false, true, true, false, false, false);
 		CWorld::pIgnoreEntity = savedIgnoreEntity;
 	}
+	CVector normal;
+	if(hit){
+		normal = point.normal;
+		normal.Normalise();
+		// Collision faces are two-sided: one met from behind faces along the
+		// motion. Turn it toward the gun so the gun doesn't snap through.
+		if(DotProduct(velocity, normal) > 0.0f)
+			normal = -normal;
+	}else if(gDroppedWeaponGrounded[hand]){
+		CEntity *savedIgnoreEntity = CWorld::pIgnoreEntity;
+		CWorld::pIgnoreEntity = FindPlayerVehicle();
+		hit = CWorld::ProcessLineOfSight(end,
+			end-gDroppedWeaponGroundNormal[hand]*(DROPPED_WEAPON_RADIUS+0.02f),
+			point, hitEntity, true, true, false, true, true, false, false, false);
+		CWorld::pIgnoreEntity = savedIgnoreEntity;
+		if(hit){
+			normal = point.normal;
+			normal.Normalise();
+			if(DotProduct(normal, gDroppedWeaponGroundNormal[hand]) < 0.0f)
+				normal = -normal;
+		}
+	}
 	if(!hit){
 		matrix.GetPosition() = end;
+		gDroppedWeaponGrounded[hand] = false;
 		return;
 	}
 
-	CVector normal = point.normal;
-	normal.Normalise();
 	matrix.GetPosition() = point.point+normal*DROPPED_WEAPON_RADIUS;
-	const float normalSpeed = DotProduct(velocity, normal);
-	if(normalSpeed >= 0.0f)
-		return;
+	const float normalSpeed = Min(0.0f, DotProduct(velocity, normal));
 	CVector tangent = velocity-normal*normalSpeed;
 	if(-normalSpeed > DROPPED_WEAPON_BOUNCE_SPEED){
 		// Impact friction takes slide speed in proportion to the change of
@@ -14980,19 +15014,27 @@ void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
 		velocity = tangent-normal*(normalSpeed*DROPPED_WEAPON_RESTITUTION);
 		// The impact tumbles the gun along its slide.
 		spin = spin*0.5f+CrossProduct(normal, tangent)*(0.5f/0.1f);
+		gDroppedWeaponGrounded[hand] = false;
+		LimitDroppedWeaponSpin(&spin);
 		return;
 	}
 
 	// Sliding contact: friction brakes the slide, the gun rolls about its barrel,
 	// and the barrel settles flat on the surface.
+	// Braking follows the load on the surface: full on a floor, none on a
+	// wall, so a gun slides down walls and steep slopes.
 	velocity = tangent;
 	const float slideSpeed = tangent.Magnitude();
-	const float braked = Max(0.0f, slideSpeed-DROPPED_WEAPON_SLIDE_BRAKING*dt);
+	const float braked = Max(0.0f, slideSpeed-
+		DROPPED_WEAPON_SLIDE_BRAKING*Max(0.0f, normal.z)*dt);
 	if(slideSpeed > 0.0001f)
 		velocity *= braked/slideSpeed;
 	const CVector barrel = matrix.GetForward();
 	spin = barrel*(DotProduct(CrossProduct(normal, velocity), barrel)/
 		DROPPED_WEAPON_RADIUS);
+	LimitDroppedWeaponSpin(&spin);
+	gDroppedWeaponGrounded[hand] = normal.z > 0.3f;
+	gDroppedWeaponGroundNormal[hand] = normal;
 	CVector tiltAxis = CrossProduct(barrel, normal);
 	const float tilt = tiltAxis.Magnitude();
 	if(tilt > 0.001f){
@@ -15010,7 +15052,7 @@ void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
 				-asinf(clamp(lift, -1.0f, 1.0f)));
 		velocity = CVector(0.0f, 0.0f, 0.0f);
 		spin = CVector(0.0f, 0.0f, 0.0f);
-		gDroppedWeaponRestTime[hand] = time;
+		gDroppedWeaponRestTime[hand] = now;
 	}
 }
 
@@ -15021,15 +15063,16 @@ bool BuildDroppedWeaponMatrix(int hand, ULONGLONG now, CMatrix *matrix)
 		return false;
 	if(now < gDroppedWeaponStartTime[hand] || IsDroppedWeaponExpired(hand, now))
 		return false;
-	// Several callers ask per frame; the steps only run up to the new time. A
-	// long hitch skips time instead of running a burst of steps.
-	if(now-gDroppedWeaponSimTime[hand] > DROPPED_WEAPON_MAX_CATCHUP_MS)
-		gDroppedWeaponSimTime[hand] = now-DROPPED_WEAPON_MAX_CATCHUP_MS;
+	// Several callers ask per frame; the steps only run up to the new time, on
+	// the performance counter so every frame advances evenly. A long hitch
+	// skips time instead of running a burst of steps.
+	const double simNow = PerfNowMs();
+	if(simNow-gDroppedWeaponSimTime[hand] > DROPPED_WEAPON_MAX_CATCHUP_MS)
+		gDroppedWeaponSimTime[hand] = simNow-DROPPED_WEAPON_MAX_CATCHUP_MS;
 	while(gDroppedWeaponRestTime[hand] == 0 &&
-	      now-gDroppedWeaponSimTime[hand] >= DROPPED_WEAPON_STEP_MS){
+	      simNow-gDroppedWeaponSimTime[hand] >= DROPPED_WEAPON_STEP_MS){
 		gDroppedWeaponSimTime[hand] += DROPPED_WEAPON_STEP_MS;
-		StepDroppedWeapon(hand, DROPPED_WEAPON_STEP_MS/1000.0f,
-			gDroppedWeaponSimTime[hand]);
+		StepDroppedWeapon(hand, DROPPED_WEAPON_STEP_MS/1000.0f, now);
 	}
 	*matrix = gDroppedWeaponMatrix[hand];
 	return true;
