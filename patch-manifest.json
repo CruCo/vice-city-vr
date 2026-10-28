@@ -777,7 +777,7 @@
                     },
                     {
                         "path":  "src/vr/OpenXRWristHud.h",
-                        "sha256":  "1f51748fb3726c1a4683786aee494ca0f522ca4760831a69585672d16b155d83"
+                        "sha256":  "5ffe57e1559c2c2e5f0d3169f9a9a263c7c6c62d177b2ce093f1134d993efb72"
                     },
                     {
                         "path":  "src/vr/VrCameraHeadScope.h",
@@ -913,7 +913,7 @@
                     },
                     {
                         "path":  "tools/vr/tests/wrist-hud-lifecycle-test.cpp",
-                        "sha256":  "5dd29c4b72b8d6d800e387e712a0f3fa0c1d01f390c9e9b7d12494d57aa4d786"
+                        "sha256":  "f91b572f990be57be8e5cbed4dc99537a65701d03631f9fa71884aee778e3c42"
                     },
                     {
                         "path":  "tools/vr/tests/wrist-hud-test.cpp",
