@@ -2118,8 +2118,10 @@ struct HandVelocitySample
 {
 	ULONGLONG time;
 	XrVector3f velocity;
+	XrQuaternionf orientation;
 };
-enum { HAND_VELOCITY_HISTORY = 16, THROW_VELOCITY_WINDOW_MS = 100 };
+enum { HAND_VELOCITY_HISTORY = 16, THROW_VELOCITY_WINDOW_MS = 100,
+	HAND_SPIN_WINDOW_MS = 50 };
 HandVelocitySample gHandVelocityHistory[EYE_COUNT][HAND_VELOCITY_HISTORY];
 int gHandVelocityHistoryNext[EYE_COUNT];
 float gTrackedHandGrip[EYE_COUNT];
@@ -10730,6 +10732,42 @@ CVector GetPeakHandVelocity(int hand)
 	return ToGameVector(peak);
 }
 
+// The hand's spin over the last 50 ms in rad/s along game axes, from the
+// tracked orientations: the runtime's angular velocity can be missing or keep
+// one fixed axis.
+CVector GetRecentHandAngularVelocity(int hand)
+{
+	const ULONGLONG now = GetTickCount64();
+	const HandVelocitySample *newest = nil, *oldest = nil;
+	for(int index = 0; index < HAND_VELOCITY_HISTORY; index++){
+		const HandVelocitySample &sample = gHandVelocityHistory[hand][index];
+		if(sample.time == 0 || now-sample.time > HAND_SPIN_WINDOW_MS)
+			continue;
+		if(!newest || sample.time > newest->time)
+			newest = &sample;
+		if(!oldest || sample.time < oldest->time)
+			oldest = &sample;
+	}
+	if(!newest || newest->time-oldest->time < 5)
+		return CVector(0.0f, 0.0f, 0.0f);
+	// newest = delta*oldest, so delta = newest*conjugate(oldest).
+	const XrQuaternionf &a = oldest->orientation;
+	const XrQuaternionf inverseOldest = { -a.x, -a.y, -a.z, a.w };
+	XrQuaternionf delta = MultiplyXrQuaternion(newest->orientation, inverseOldest);
+	if(delta.w < 0.0f){
+		delta.x = -delta.x; delta.y = -delta.y;
+		delta.z = -delta.z; delta.w = -delta.w;
+	}
+	const float sine = sqrtf(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+	if(sine < 0.0001f)
+		return CVector(0.0f, 0.0f, 0.0f);
+	const float angle = 2.0f*atan2f(sine, delta.w);
+	const float seconds = (float)(newest->time-oldest->time)/1000.0f;
+	const float scale = angle/(sine*seconds);
+	const XrVector3f spin = { delta.x*scale, delta.y*scale, delta.z*scale };
+	return ToGameVector(spin);
+}
+
 CVector BuildPhysicalThrowVelocity(int hand)
 {
 	CVector velocity = GetPeakHandVelocity(hand)*
@@ -12337,6 +12375,7 @@ void LocateTrackedHands()
 				gHandVelocityHistoryNext[hand]];
 			sample.time = GetTickCount64();
 			sample.velocity = gTrackedHandLinearVelocity[hand];
+			sample.orientation = gTrackedHandPose[hand].orientation;
 			gHandVelocityHistoryNext[hand] =
 				(gHandVelocityHistoryNext[hand]+1) % HAND_VELOCITY_HISTORY;
 		}
@@ -14799,6 +14838,7 @@ enum {
 	DROPPED_WEAPON_MAX_CATCHUP_MS = 100
 };
 static const float DROPPED_WEAPON_MAX_HAND_SPEED = 10.0f;
+static const float DROPPED_WEAPON_MAX_SPIN = 20.0f;	// rad/s
 // Below real gravity, which felt too strong for tossing and catching in VR.
 static const float DROPPED_WEAPON_GRAVITY = 5.2f;
 // Contact: the gun's centre stays this far off a surface. An impact faster than
@@ -14846,10 +14886,10 @@ void StartDroppedWeapon(int hand, int slot)
 	if(linearSpeed > DROPPED_WEAPON_MAX_HAND_SPEED)
 		gDroppedWeaponLinearVelocity[hand] *= DROPPED_WEAPON_MAX_HAND_SPEED/linearSpeed;
 	gDroppedWeaponLinearVelocity[hand] += FindPlayerSpeed()*50.0f;
-	gDroppedWeaponAngularVelocity[hand] = ToGameVector(gTrackedHandAngularVelocity[hand]);
+	gDroppedWeaponAngularVelocity[hand] = GetRecentHandAngularVelocity(hand);
 	const float angularSpeed = gDroppedWeaponAngularVelocity[hand].Magnitude();
-	if(angularSpeed > 12.0f)
-		gDroppedWeaponAngularVelocity[hand] *= 12.0f/angularSpeed;
+	if(angularSpeed > DROPPED_WEAPON_MAX_SPIN)
+		gDroppedWeaponAngularVelocity[hand] *= DROPPED_WEAPON_MAX_SPIN/angularSpeed;
 	gDroppedWeaponSlot[hand] = slot;
 	gDroppedWeaponStartTime[hand] = GetTickCount64();
 	gDroppedWeaponSimTime[hand] = gDroppedWeaponStartTime[hand];
