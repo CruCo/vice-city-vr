@@ -14799,16 +14799,18 @@ enum {
 	DROPPED_WEAPON_MAX_CATCHUP_MS = 100
 };
 static const float DROPPED_WEAPON_MAX_HAND_SPEED = 10.0f;
-static const float DROPPED_WEAPON_GRAVITY = 9.81f;
+// Below real gravity, which felt too strong for tossing and catching in VR.
+static const float DROPPED_WEAPON_GRAVITY = 5.2f;
 // Contact: the gun's centre stays this far off a surface. An impact faster than
-// the bounce speed bounces with the restitution; slower, the gun slides with
-// the friction until it lies still.
+// the bounce speed bounces with the restitution and loses slide speed in
+// proportion to the impact speed, so a steep impact barely slides. Slower, the
+// gun slides with a fixed braking until it lies still.
 static const float DROPPED_WEAPON_RADIUS = 0.05f;
 static const float DROPPED_WEAPON_BOUNCE_SPEED = 1.0f;
 static const float DROPPED_WEAPON_RESTITUTION = 0.35f;
-static const float DROPPED_WEAPON_IMPACT_FRICTION = 0.8f;
-static const float DROPPED_WEAPON_SLIDE_FRICTION = 0.5f;
-static const float DROPPED_WEAPON_REST_SPEED = 0.05f;
+static const float DROPPED_WEAPON_IMPACT_FRICTION = 0.6f;
+static const float DROPPED_WEAPON_SLIDE_BRAKING = 6.0f;	// m/s^2
+static const float DROPPED_WEAPON_REST_SPEED = 0.15f;
 
 void StartDroppedWeapon(int hand, int slot)
 {
@@ -14837,8 +14839,8 @@ void StartDroppedWeapon(int hand, int slot)
 		gDroppedWeaponMatrix[hand].GetPosition() =
 			gBaseCamera.GetPosition()+ToGameVector(pose.position);
 	// Like a physical throw: the peak hand velocity of the last 100 ms plus the
-	// player's own movement, here 1:1 under real gravity so a toss goes as high
-	// as the hand sent it and can be caught where the eye expects it.
+	// player's own movement, here 1:1 so a toss goes as high as the hand sent
+	// it and can be caught where the eye expects it.
 	gDroppedWeaponLinearVelocity[hand] = GetPeakHandVelocity(hand);
 	const float linearSpeed = gDroppedWeaponLinearVelocity[hand].Magnitude();
 	if(linearSpeed > DROPPED_WEAPON_MAX_HAND_SPEED)
@@ -14928,8 +14930,14 @@ void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
 		return;
 	CVector tangent = velocity-normal*normalSpeed;
 	if(-normalSpeed > DROPPED_WEAPON_BOUNCE_SPEED){
-		velocity = tangent*DROPPED_WEAPON_IMPACT_FRICTION-
-			normal*(normalSpeed*DROPPED_WEAPON_RESTITUTION);
+		// Impact friction takes slide speed in proportion to the change of
+		// the normal speed.
+		const float tangentSpeed = tangent.Magnitude();
+		const float tangentLoss = DROPPED_WEAPON_IMPACT_FRICTION*
+			(1.0f+DROPPED_WEAPON_RESTITUTION)*-normalSpeed;
+		if(tangentSpeed > 0.0001f)
+			tangent *= Max(0.0f, tangentSpeed-tangentLoss)/tangentSpeed;
+		velocity = tangent-normal*(normalSpeed*DROPPED_WEAPON_RESTITUTION);
 		// The impact tumbles the gun along its slide.
 		spin = spin*0.5f+CrossProduct(normal, tangent)*(0.5f/0.1f);
 		return;
@@ -14939,8 +14947,7 @@ void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
 	// and the barrel settles flat on the surface.
 	velocity = tangent;
 	const float slideSpeed = tangent.Magnitude();
-	const float braked = Max(0.0f, slideSpeed-
-		DROPPED_WEAPON_SLIDE_FRICTION*DROPPED_WEAPON_GRAVITY*dt);
+	const float braked = Max(0.0f, slideSpeed-DROPPED_WEAPON_SLIDE_BRAKING*dt);
 	if(slideSpeed > 0.0001f)
 		velocity *= braked/slideSpeed;
 	const CVector barrel = matrix.GetForward();
@@ -14953,8 +14960,14 @@ void StepDroppedWeapon(int hand, float dt, ULONGLONG time)
 		RotateDroppedWeapon(&matrix, tiltAxis*(1.0f/tilt),
 			-asinf(clamp(lift, -1.0f, 1.0f))*Min(1.0f, dt*8.0f));
 	}
-	if(normal.z > 0.6f && braked < DROPPED_WEAPON_REST_SPEED &&
-	   fabsf(DotProduct(matrix.GetForward(), normal)) < 0.05f){
+	// Slow on the ground: it stops and lies down flat at once.
+	if(normal.z > 0.6f && braked < DROPPED_WEAPON_REST_SPEED){
+		const float lift = DotProduct(matrix.GetForward(), normal);
+		tiltAxis = CrossProduct(matrix.GetForward(), normal);
+		const float restTilt = tiltAxis.Magnitude();
+		if(restTilt > 0.001f)
+			RotateDroppedWeapon(&matrix, tiltAxis*(1.0f/restTilt),
+				-asinf(clamp(lift, -1.0f, 1.0f)));
 		velocity = CVector(0.0f, 0.0f, 0.0f);
 		spin = CVector(0.0f, 0.0f, 0.0f);
 		gDroppedWeaponRestTime[hand] = time;
