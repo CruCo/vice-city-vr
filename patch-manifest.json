@@ -10,7 +10,7 @@
     "patches":  [
                     {
                         "path":  "vice-city-vr.patch",
-                        "sha256":  "141a707a0bc115f1a2811bfa53bfad93564ac6f4c1299f529da4030639cde3c0",
+                        "sha256":  "7033fb5562b5afd6e77979f86d7b4ae1de234239906a6acff70d6d6f27ed5536",
                         "targets":  [
                                         {
                                             "path":  "CMakeLists.txt",
@@ -50,7 +50,7 @@
                                         {
                                             "path":  "src/audio/AudioLogic.cpp",
                                             "preimageSha256":  "0a2c5687cc88cb6f9333ae0a63faac1febdf732e54a787106e7dd26080d42bf4",
-                                            "postimageSha256":  "47a850520ad81da1a6148630c9177d30b796191b22ee95f28a7d206a15ee3af9"
+                                            "postimageSha256":  "9c298dcd0409dcae5d53c450243d9bd0ad6cad6f90219655846d0bc2f14235ae"
                                         },
                                         {
                                             "path":  "src/audio/MusicManager.cpp",
@@ -220,7 +220,7 @@
                                         {
                                             "path":  "src/core/main.cpp",
                                             "preimageSha256":  "1dbcc1495c3b2c6671565c264109568a6910d402dcbd741a42cff62faceb458c",
-                                            "postimageSha256":  "182ec692581b3cd996558455ea3200f49a5dbc534fb88d9eda269b9c2fd3cf72"
+                                            "postimageSha256":  "1ae005e460be36b4a8fecfe9e773053537a5510caa737c60e248ae85ece3842b"
                                         },
                                         {
                                             "path":  "src/core/main.h",
@@ -645,7 +645,7 @@
                                         {
                                             "path":  "src/weapons/Weapon.cpp",
                                             "preimageSha256":  "05c53a74e0b2290f8166c026031aba004371baf0b5e1fa23dbe7c4f309f55d82",
-                                            "postimageSha256":  "aaa33986f08aab0721e872d00c9cdb4e0f955e714a188781c3d09dcedb955a4b"
+                                            "postimageSha256":  "be345af032bbb1c69945c7da2e2870386f8174ccaaa42009c7b073744636d496"
                                         },
                                         {
                                             "path":  "src/weapons/Weapon.h",
@@ -769,15 +769,15 @@
                     },
                     {
                         "path":  "src/vr/OculusVR.h",
-                        "sha256":  "14758a89d30faf9af0036c074fbbd2fb573016293ae621b6a647d6bac0ab5280"
+                        "sha256":  "b92e562be7fb08e81ad98e1248ad641a7b2c81acb628faa16fa9afd8eca56b61"
                     },
                     {
                         "path":  "src/vr/OpenXRVR.cpp",
-                        "sha256":  "bfc9a14d425842bf8b3a455d71583949f5fc814ef0cd5fa414c80c0d6abb3d0d"
+                        "sha256":  "e5e7cf324896ced2cadcaa38833e1768f989a8f18a38ea7e04e20e00f58edd57"
                     },
                     {
                         "path":  "src/vr/OpenXRWristHud.h",
-                        "sha256":  "1f51748fb3726c1a4683786aee494ca0f522ca4760831a69585672d16b155d83"
+                        "sha256":  "5ffe57e1559c2c2e5f0d3169f9a9a263c7c6c62d177b2ce093f1134d993efb72"
                     },
                     {
                         "path":  "src/vr/VrCameraHeadScope.h",
@@ -913,7 +913,7 @@
                     },
                     {
                         "path":  "tools/vr/tests/wrist-hud-lifecycle-test.cpp",
-                        "sha256":  "5dd29c4b72b8d6d800e387e712a0f3fa0c1d01f390c9e9b7d12494d57aa4d786"
+                        "sha256":  "f91b572f990be57be8e5cbed4dc99537a65701d03631f9fa71884aee778e3c42"
                     },
                     {
                         "path":  "tools/vr/tests/wrist-hud-test.cpp",

@@ -691,6 +691,18 @@ int gAttachedMissionWeaponSlot = -1;
 // slot.  The primary hand remains the sole owner of the weapon/trigger while
 // this relation only supplies the two-handed pose.
 int gWeaponSupportHand[EYE_COUNT] = { -1, -1 };
+// Releasing the primary grip while the support hand still holds the foregrip
+// hands the weapon to the support hand without moving it: the final model
+// matrix and aim ray are kept relative to that controller. Indexed by the
+// carrying hand, which owns the slot, so the other hand is entirely free.
+// Squeezing at the weapon's grip again restores the two-handed hold.
+bool gWeaponForegripCarry[EYE_COUNT];
+int gWeaponForegripCarrySlot[EYE_COUNT] = { -1, -1 };
+CMatrix gWeaponForegripCarryModel[EYE_COUNT];
+CVector gWeaponForegripCarryAimSource[EYE_COUNT];
+CVector gWeaponForegripCarryAimDirection[EYE_COUNT];
+CVector gWeaponForegripCarryGrip[EYE_COUNT];
+bool gWeaponForegripRegripArmed[EYE_COUNT];
 CMatrix gTrackedWeaponRenderMatrix[EYE_COUNT];
 int gTrackedWeaponRenderMatrixSlot[EYE_COUNT] = { -1, -1 };
 CMatrix gTrackedWeaponContactMatrix[EYE_COUNT];
@@ -1277,6 +1289,17 @@ float gBikeHandleDistance[EYE_COUNT] = { 1000.0f, 1000.0f };
 bool gCarWheelGrabbed[EYE_COUNT];
 bool gCarWheelGripDown[EYE_COUNT];
 float gCarWheelDistance[EYE_COUNT] = { 1000.0f, 1000.0f };
+// Each hand owns its side socket (9 or 3 o'clock) and may instead take the
+// shared 12 or 6 o'clock socket. The socket is chosen when the grip closes
+// and falls back to the side once the hand lets go.
+enum eCarWheelSocket
+{
+	CAR_WHEEL_SOCKET_SIDE,
+	CAR_WHEEL_SOCKET_TOP,
+	CAR_WHEEL_SOCKET_BOTTOM,
+	CAR_WHEEL_SOCKET_COUNT
+};
+int gCarWheelSocket[EYE_COUNT] = { CAR_WHEEL_SOCKET_SIDE, CAR_WHEEL_SOCKET_SIDE };
 float gImmersiveCarSteering;
 float gImmersiveCarPhysicalAngle;
 float gImmersiveCarDesiredAngle;
@@ -1780,8 +1803,8 @@ gBuiltInWeaponAimRelativeDefaults[] = {
 		{ 35895,999239,-15290, 997527,-34899,61011, -60431,17442,998020,
 		  349579,23315,119034 } },
 	{ WEAPONTYPE_SHOTGUN, ModelSets::MODEL_SET_CLASSIC,
-		{ 98698,994969,-17213, 981745,-94531,165048, -162590,33189,986135,
-		  255859,6790,118008 } },
+		{ 119583,992732,-13584, 977715,-115374,175390, -172548,34256,984405,
+		  774484,-46180,199555 } },
 	{ WEAPONTYPE_SPAS12_SHOTGUN, ModelSets::MODEL_SET_CLASSIC,
 		{ 105429,994421,-3472, 983571,-103763,147719, -146535,18989,989023,
 		  359253,5951,160431 } },
@@ -2189,6 +2212,9 @@ bool gRuntimeNeedsCinemaKeepAlive;
 // Theater mode renders cinema as a world-anchored stereo projection, avoiding
 // SteamVR's 15 Hz quad-only throttle.
 bool gCinemaTheaterMode;
+// Wine/Proton only: submit a hidden quad first so wineopenxr converts the
+// following quad layers correctly (see EndXrFrame).
+bool gWineLayerGuard;
 // True once the classic quad path has actually released a cinema swapchain
 // image this session. Theater-mode sessions never do, and a held quad frame
 // must not reference a swapchain with no released image.
@@ -3357,6 +3383,7 @@ void ResetImmersiveCarInteraction()
 		gCarWheelGrabbed[hand] = false;
 		gCarWheelGripDown[hand] = false;
 		gCarWheelDistance[hand] = 1000.0f;
+		gCarWheelSocket[hand] = CAR_WHEEL_SOCKET_SIDE;
 		gCarHornContact[hand] = false;
 		gCarHornArmed[hand] = false;
 		gCarHornPreviousDistance[hand] = 1000.0f;
@@ -7152,7 +7179,7 @@ bool UpdateVrMenuSwapchain()
 			100, 225, 255);
 		DrawVrMenuText(bike ?
 			"HAND VALUES ARE PER MODEL - CENTER HAS GLOBAL AND MODEL LAYERS" :
-			"GRIP POINTS FOLLOW THE WHEEL AT 9 AND 3 - RADIUS IS AUTHORITATIVE",
+			"GRIPS AT 9, 12, 3 AND 6 FOLLOW THE WHEEL - RADIUS IS AUTHORITATIVE",
 			VR_MENU_WIDTH/2, 143, 2, 170, 190, 210);
 		char rows[VR_BIKE_CALIBRATION_MENU_ITEM_COUNT][112];
 		sprintf(rows[VR_BIKE_CAL_HAND], "EDIT HANDLE  < %s >",
@@ -8256,6 +8283,15 @@ bool InitializeRuntime()
 		else if(cinemaProjectionRuntime)
 			VrLog("Cinema theater projection disabled by CinemaProjection=0; "
 				"the runtime quad path will be used\n");
+		const bool wine = GetProcAddress(GetModuleHandleA("ntdll.dll"),
+			"wine_get_version") != nil;
+		gWineLayerGuard = wine &&
+			GetPrivateProfileIntA("VR", "WineLayerGuard", 1,
+				GetVrSettingsPath()) != 0;
+		if(gWineLayerGuard)
+			VrLog("Wine detected: wineopenxr layer guard enabled "
+				"(disable with [VR] WineLayerGuard=0 in %s)\n",
+				GetVrSettingsPath());
 	}
 	XrSystemGetInfo systemInfo = { XR_TYPE_SYSTEM_GET_INFO };
 	systemInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -8712,6 +8748,28 @@ bool EndXrFrame(const XrCompositionLayerBaseHeader *const *layers, uint32_t coun
 {
 	if(!gFrameBegun)
 		return false;
+	// Proton's wineopenxr sizes every converted layer after layers[0]. With a
+	// projection first, each following quad overflows into the next one and
+	// SteamVR rejects the frame with XR_ERROR_POSE_INVALID. A tiny quad first,
+	// hidden under the opaque projection, makes every converted slot quad-sized.
+	const XrCompositionLayerBaseHeader *guarded[16];
+	XrCompositionLayerQuad guardQuad;
+	if(gWineLayerGuard && count >= 3 && count < 16 && layers[0] &&
+	   layers[0]->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION){
+		const XrCompositionLayerQuad *firstQuad = nil;
+		for(uint32_t i = 1; i < count && !firstQuad; i++)
+			if(layers[i] && layers[i]->type == XR_TYPE_COMPOSITION_LAYER_QUAD)
+				firstQuad = (const XrCompositionLayerQuad*)layers[i];
+		if(firstQuad){
+			guardQuad = *firstQuad;
+			guardQuad.next = nil;
+			guardQuad.size.width = guardQuad.size.height = 0.001f;
+			guarded[0] = (const XrCompositionLayerBaseHeader*)&guardQuad;
+			for(uint32_t i = 0; i < count; i++) guarded[i+1] = layers[i];
+			layers = guarded;
+			count++;
+		}
+	}
 	XrFrameEndInfo end = { XR_TYPE_FRAME_END_INFO };
 	end.displayTime = gFrameState.predictedDisplayTime;
 	end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -9627,10 +9685,11 @@ bool BuildCarWheelPose(CVehicle *car, CarWheelPose *pose)
 	return true;
 }
 
-bool BuildCarWheelMatrixInternal(int hand, CMatrix *matrix,
+bool BuildCarWheelSocketMatrixInternal(int hand, int socket, CMatrix *matrix,
 	bool applySteering)
 {
 	if(!matrix || hand < 0 || hand >= EYE_COUNT ||
+	   socket < 0 || socket >= CAR_WHEEL_SOCKET_COUNT ||
 	   !IsVrCarDrivingActiveInternal())
 		return false;
 	CVehicle *car = GetActivePlayerCar();
@@ -9638,9 +9697,10 @@ bool BuildCarWheelMatrixInternal(int hand, CMatrix *matrix,
 	if(!BuildCarWheelPose(car, &pose))
 		return false;
 	matrix->SetUnity();
-	// Car grips are fixed, derived points at 9 and 3 o'clock. There are no
-	// independent hand offsets, so calibration cannot stretch or shift the
-	// physical wheel away from its authoritative centre and radius.
+	// Car grips are fixed, derived points at 9 and 3 o'clock, plus 12 and 6
+	// o'clock. There are no independent hand offsets, so calibration cannot
+	// stretch or shift the physical wheel away from its authoritative centre
+	// and radius.
 	const float side = hand == 0 ? -1.0f : 1.0f;
 	// RenderVrTrackedHand multiplies Matrix::Right by the hand side, producing
 	// the outward radial direction. UltimateXR maps its +Y palm normal to the
@@ -9656,11 +9716,21 @@ bool BuildCarWheelMatrixInternal(int hand, CMatrix *matrix,
 	matrix->GetPosition() = pose.center+pose.right*(side*pose.radius);
 	const float physicalAngle = IsImmersiveCarDrivingActiveInternal() ?
 		gImmersiveCarPhysicalAngle : gMotionVehiclePhysicalAngle;
-	if(applySteering && physicalAngle != 0.0f){
+	// The 12 and 6 o'clock sockets are the side socket turned a quarter around
+	// the wheel normal. Rotating the whole basis keeps the palm facing the
+	// centre and the fingers along the rim. Around the normal a positive angle
+	// takes +right toward -up, so the side sign picks the direction per hand.
+	float socketAngle = 0.0f;
+	if(socket == CAR_WHEEL_SOCKET_TOP)
+		socketAngle = -side*DEGTORAD(90.0f);
+	else if(socket == CAR_WHEEL_SOCKET_BOTTOM)
+		socketAngle = side*DEGTORAD(90.0f);
+	const float steeringAngle = applySteering ? physicalAngle : 0.0f;
+	if(socketAngle != 0.0f || steeringAngle != 0.0f){
 		// The logical wheel angle and Rodrigues rotation use opposite signs in
 		// Vice City's car basis. This sign is visual only: vehicle steering is
 		// passed through independently in GetImmersiveCarSteering.
-		const float angle = -physicalAngle;
+		const float angle = socketAngle-steeringAngle;
 		matrix->GetPosition() = pose.center+RotateAroundAxis(
 			matrix->GetPosition()-pose.center, pose.normal, angle);
 		matrix->GetRight() = RotateAroundAxis(matrix->GetRight(),
@@ -9671,6 +9741,15 @@ bool BuildCarWheelMatrixInternal(int hand, CMatrix *matrix,
 			pose.normal, angle);
 	}
 	return true;
+}
+
+bool BuildCarWheelMatrixInternal(int hand, CMatrix *matrix,
+	bool applySteering)
+{
+	if(hand < 0 || hand >= EYE_COUNT)
+		return false;
+	return BuildCarWheelSocketMatrixInternal(hand, gCarWheelSocket[hand],
+		matrix, applySteering);
 }
 
 void UpdateImmersiveCarModelSteeringWheelInternal(CVehicle *vehicle)
@@ -9969,13 +10048,39 @@ uint32 UpdateImmersiveCarInput(const float *grips, uint32 blockedHands)
 	bool anchorValid[EYE_COUNT] = {};
 	gCarWheelUnavailableMask = 0;
 	for(int hand = 0; hand < EYE_COUNT; hand++){
-		anchorValid[hand] =
-			BuildCarWheelMatrixInternal(hand, &anchors[hand], false);
 		if(gTrackedHandPoseValid[hand])
 			handPositions[hand] = gBaseCamera.GetPosition()+
 				ToGameVector(gTrackedHandPose[hand].position);
 		else
 			handPositions[hand] = CVector(0.0f, 0.0f, 0.0f);
+		// A free hand measures against its nearest socket on the turned wheel,
+		// where the grip boxes are drawn: its own side or a 12/6 o'clock socket
+		// the other hand is not already holding. Measuring on the neutral wheel
+		// would pick a socket a quarter turn away once the wheel is turned.
+		// Iterating the hands in order makes a same-frame double grab of the
+		// shared socket resolve to the left hand.
+		int nearestSocket = gCarWheelSocket[hand];
+		if(!gCarWheelGrabbed[hand] && gTrackedHandPoseValid[hand]){
+			float nearestDistance = 1000.0f;
+			for(int socket = 0; socket < CAR_WHEEL_SOCKET_COUNT; socket++){
+				const int other = 1-hand;
+				if(socket != CAR_WHEEL_SOCKET_SIDE && gCarWheelGrabbed[other] &&
+				   gCarWheelSocket[other] == socket)
+					continue;
+				CMatrix candidate;
+				if(!BuildCarWheelSocketMatrixInternal(hand, socket, &candidate,
+				   true))
+					continue;
+				const float distance =
+					(handPositions[hand]-candidate.GetPosition()).Magnitude();
+				if(distance < nearestDistance){
+					nearestDistance = distance;
+					nearestSocket = socket;
+				}
+			}
+		}
+		anchorValid[hand] = BuildCarWheelSocketMatrixInternal(hand,
+			nearestSocket, &anchors[hand], true);
 		gCarWheelDistance[hand] =
 			anchorValid[hand] && gTrackedHandPoseValid[hand] ?
 			(handPositions[hand]-anchors[hand].GetPosition()).Magnitude() :
@@ -9993,10 +10098,15 @@ uint32 UpdateImmersiveCarInput(const float *grips, uint32 blockedHands)
 			gCarWheelGripDown[hand], grips[hand], unavailable,
 			gCarWheelDistance[hand]);
 		if(gCarWheelGrabbed[hand] && !wasGrabbed){
-			debug("[OpenXR] %s car wheel grip grabbed on %s\n",
+			gCarWheelSocket[hand] = nearestSocket;
+			debug("[OpenXR] %s car wheel grip grabbed at %s on %s\n",
 				hand == 0 ? "Left" : "Right",
+				nearestSocket == CAR_WHEEL_SOCKET_TOP ? "12 o'clock" :
+				nearestSocket == CAR_WHEEL_SOCKET_BOTTOM ? "6 o'clock" :
+				hand == 0 ? "9 o'clock" : "3 o'clock",
 				GetActiveVrVehicleName());
-		}
+		}else if(!gCarWheelGrabbed[hand])
+			gCarWheelSocket[hand] = CAR_WHEEL_SOCKET_SIDE;
 	}
 
 	const bool left = gCarWheelGrabbed[0] && anchorValid[0];
@@ -14771,11 +14881,17 @@ bool BuildDroppedWeaponMatrix(int hand, ULONGLONG now, CMatrix *matrix)
 	return true;
 }
 
+void ClearWeaponForegripCarry(int hand);
+
 void GiveWeaponToHand(int hand, int slot, const char *reason)
 {
 	if(hand < 0 || hand >= EYE_COUNT || slot < 0)
 		return;
 	ClearWeaponSupportForHand(hand);
+	// Every new assignment starts as an ordinary grip hold; HandWeaponToForegrip
+	// sets the carry again after this call. A stale carry would, for example,
+	// keep the trigger of a mounted mission gun from firing.
+	ClearWeaponForegripCarry(hand);
 	gHeldWeaponSlot[hand] = slot;
 	gWeaponHolsterSelection[hand] = slot;
 	gTrackedWeaponRenderMatrixSlot[hand] = -1;
@@ -14894,6 +15010,84 @@ bool UpdateAttachedMissionWeaponInput(const float *grips)
 	return true;
 }
 
+// Raw controller frame in game space. A foregrip carry stores the weapon
+// relative to it, so the weapon follows the carrying hand rigidly.
+bool BuildForegripCarryController(int hand, CMatrix *controller)
+{
+	if(!controller || hand < 0 || hand >= EYE_COUNT ||
+	   !gTrackedHandPoseValid[hand])
+		return false;
+	const XrPosef &pose = gTrackedHandPose[hand];
+	const XrVector3f localRight = { 1.0f, 0.0f, 0.0f };
+	const XrVector3f localUp = { 0.0f, 1.0f, 0.0f };
+	const XrVector3f localForward = { 0.0f, 0.0f, -1.0f };
+	controller->SetUnity();
+	controller->GetRight() = ToGameVector(Rotate(pose.orientation, localRight));
+	controller->GetUp() = ToGameVector(Rotate(pose.orientation, localUp));
+	controller->GetForward() = ToGameVector(Rotate(pose.orientation, localForward));
+	controller->GetRight().Normalise();
+	controller->GetUp().Normalise();
+	controller->GetForward().Normalise();
+	controller->GetPosition() = gBaseCamera.GetPosition()+
+		ToGameVector(pose.position);
+	return true;
+}
+
+bool IsWeaponForegripCarryInternal(int hand)
+{
+	return hand >= 0 && hand < EYE_COUNT && gWeaponForegripCarry[hand] &&
+		gHeldWeaponSlot[hand] >= 0 &&
+		gHeldWeaponSlot[hand] == gWeaponForegripCarrySlot[hand];
+}
+
+void ClearWeaponForegripCarry(int hand)
+{
+	gWeaponForegripCarry[hand] = false;
+	gWeaponForegripCarrySlot[hand] = -1;
+}
+
+// Moves a two-handed weapon from the primary to the support hand where it
+// stands. Without last frame's model matrix it falls back to an ordinary
+// hand-over at the weapon grip.
+void HandWeaponToForegrip(int primary, int support, int slot, int weaponType)
+{
+	CMatrix controller;
+	CVector source, direction;
+	const bool keepPose =
+		gTrackedWeaponContactMatrixSlot[primary] == slot &&
+		gTrackedWeaponContactMatrixType[primary] == weaponType &&
+		BuildForegripCarryController(support, &controller) &&
+		BuildTrackedWeaponAimInternal(primary, weaponType, &source,
+			&direction, false);
+	const bool placementValid = gTrackedWeaponRenderMatrixSlot[primary] == slot;
+	const CMatrix placement = gTrackedWeaponRenderMatrix[primary];
+	if(keepPose){
+		const CMatrix inverse = Invert(controller);
+		gWeaponForegripCarryModel[support] =
+			inverse*gTrackedWeaponContactMatrix[primary];
+		gWeaponForegripCarryAimSource[support] = inverse*source;
+		gWeaponForegripCarryAimDirection[support] =
+			Multiply3x3(inverse, direction);
+		gWeaponForegripCarryGrip[support] = inverse*(gBaseCamera.GetPosition()+
+			ToGameVector(gTrackedHandPose[primary].position));
+	}
+	gHeldWeaponSlot[primary] = -1;
+	gWeaponHolsterSelection[primary] = -1;
+	gTrackedWeaponRenderMatrixSlot[primary] = -1;
+	gWeaponSupportHand[primary] = -1;
+	GiveWeaponToHand(support, slot, keepPose ?
+		"held at the foregrip by" : "promoted from support to");
+	if(!keepPose)
+		return;
+	if(placementValid){
+		gTrackedWeaponRenderMatrix[support] = placement;
+		gTrackedWeaponRenderMatrixSlot[support] = slot;
+	}
+	gWeaponForegripCarry[support] = true;
+	gWeaponForegripCarrySlot[support] = slot;
+	gWeaponForegripRegripArmed[support] = true;
+}
+
 void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHands)
 {
 	const ULONGLONG now = GetTickCount64();
@@ -14918,10 +15112,46 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 	}
 
 	uint32 handledHands = blockedHands;
+	// A weapon carried at its foregrip returns to the two-handed hold when the
+	// free hand squeezes again at its grip; the carrying hand becomes the support.
+	for(int carrier = 0; carrier < EYE_COUNT; carrier++){
+		if(!IsWeaponForegripCarryInternal(carrier)){
+			ClearWeaponForegripCarry(carrier);
+			continue;
+		}
+		const int other = 1-carrier;
+		if(grips[other] <= 0.30f){
+			gWeaponForegripRegripArmed[carrier] = true;
+			continue;
+		}
+		if(grips[other] < 0.65f || !gWeaponForegripRegripArmed[carrier])
+			continue;
+		gWeaponForegripRegripArmed[carrier] = false;
+		CMatrix controller;
+		if((handledHands & (1u << other)) != 0 || gHeldWeaponSlot[other] >= 0 ||
+		   IsWeaponSupportHandInternal(other) || grips[carrier] <= 0.30f ||
+		   !gTrackedHandPoseValid[other] ||
+		   !BuildForegripCarryController(carrier, &controller))
+			continue;
+		const CVector weaponGrip = controller*gWeaponForegripCarryGrip[carrier];
+		const CVector handPosition = gBaseCamera.GetPosition()+
+			ToGameVector(gTrackedHandPose[other].position);
+		if((handPosition-weaponGrip).Magnitude() > 0.15f)
+			continue;
+		const int slot = gHeldWeaponSlot[carrier];
+		ClearWeaponForegripCarry(carrier);
+		gHeldWeaponSlot[carrier] = -1;
+		gWeaponHolsterSelection[carrier] = -1;
+		gTrackedWeaponRenderMatrixSlot[carrier] = -1;
+		GiveWeaponToHand(other, slot, "taken back at the grip by");
+		gWeaponSupportHand[other] = carrier;
+		handledHands |= (1u << other) | (1u << carrier);
+	}
+
 	// Maintain an existing support grip before considering a fresh transfer.
 	// Releasing the support hand only detaches it. Releasing the primary while
-	// the support hand remains squeezed promotes that hand to primary, which
-	// makes natural hand-to-hand passes possible without dropping the weapon.
+	// the support hand remains squeezed hands the weapon to the support hand
+	// where it stands, so it stays at the foregrip and the other hand is free.
 	for(int primary = 0; primary < EYE_COUNT; primary++){
 		const int support = gWeaponSupportHand[primary];
 		if(support < 0)
@@ -14942,11 +15172,7 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 		}
 		handledHands |= 1u << support;
 		if(grips[primary] <= 0.30f && !gWeaponGripLockEnabled){
-			gHeldWeaponSlot[primary] = -1;
-			gWeaponHolsterSelection[primary] = -1;
-			gTrackedWeaponRenderMatrixSlot[primary] = -1;
-			gWeaponSupportHand[primary] = -1;
-			GiveWeaponToHand(support, slot, "promoted from support to");
+			HandWeaponToForegrip(primary, support, slot, weaponType);
 			handledHands |= 1u << primary;
 		}
 	}
@@ -14959,6 +15185,7 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 		const int slot = gHeldWeaponSlot[primary];
 		const int weaponType = slot >= 0 ? GetVrWeaponTypeForSlot(slot) : -1;
 		if(slot < 0 || gWeaponSupportHand[primary] >= 0 ||
+		   IsWeaponForegripCarryInternal(primary) ||
 		   gHeldWeaponSlot[support] >= 0 ||
 		   (handledHands & (1u << support)) != 0 ||
 		   !IsTwoHandedWeaponTypeInternal(weaponType) ||
@@ -14980,13 +15207,9 @@ void UpdateWeaponHolsterInput(float leftGrip, float rightGrip, uint32 blockedHan
 			primary == 0 ? "left" : "right", slot);
 		if(grips[primary] <= 0.30f && !gWeaponGripLockEnabled){
 			// Both edges can arrive in the same OpenXR sample (release primary,
-			// squeeze support). Promote immediately so the generic drop pass below
-			// cannot destroy the newly established hand-off.
-			gHeldWeaponSlot[primary] = -1;
-			gWeaponHolsterSelection[primary] = -1;
-			gTrackedWeaponRenderMatrixSlot[primary] = -1;
-			gWeaponSupportHand[primary] = -1;
-			GiveWeaponToHand(support, slot, "promoted from fresh support to");
+			// squeeze support). Hand over immediately so the generic drop pass
+			// below cannot destroy the newly established hand-off.
+			HandWeaponToForegrip(primary, support, slot, weaponType);
 			handledHands |= 1u << primary;
 		}
 	}
@@ -17418,6 +17641,7 @@ bool IsTrackedWeaponTriggerPressed(int hand)
 {
 	return hand >= 0 && hand < EYE_COUNT && gVrHandsEnabled &&
 		gHeldWeaponSlot[hand] >= 0 && gSessionRunning &&
+		!IsWeaponForegripCarryInternal(hand) &&
 		gTrackedWeaponTriggerPressed[hand] &&
 		gTrackedHandAimPoseValid[hand] &&
 		(FindPlayerVehicle() == nil ||
@@ -17442,6 +17666,9 @@ bool IsTrackedWeaponTriggerJustReleased(int hand)
 static int GetTrackedWeaponFireTriggerHand(int weaponHand, int weaponType)
 {
 	if(weaponHand < 0 || weaponHand >= EYE_COUNT)
+		return -1;
+	// Carried at the foregrip, no hand is on the trigger.
+	if(IsWeaponForegripCarryInternal(weaponHand))
 		return -1;
 	if(weaponType != WEAPONTYPE_ROCKETLAUNCHER || FindPlayerVehicle() != nil)
 		return weaponHand;
@@ -18005,6 +18232,16 @@ bool BuildTrackedWeaponAimInternal(int hand, int weaponType, CVector *source,
 	   (FindPlayerVehicle() != nil &&
 	    !IsVrDrivingActiveInternal()))
 		return false;
+	if(IsWeaponForegripCarryInternal(hand)){
+		CMatrix controller;
+		if(!BuildForegripCarryController(hand, &controller))
+			return false;
+		*source = controller*gWeaponForegripCarryAimSource[hand];
+		*direction = Multiply3x3(controller,
+			gWeaponForegripCarryAimDirection[hand]);
+		direction->Normalise();
+		return true;
+	}
 	const WeaponCalibration *calibration = GetWeaponCalibration(hand, weaponType);
 	if(!calibration)
 		return false;
@@ -18764,6 +19001,43 @@ bool ShouldRenderImmersiveSteeringHandleMarker(int hand)
 		return gVrBikeCalibrationMenuVisible ||
 			(FindPlayerVehicle()->IsBoat() ? gBoatHandleHighlightsEnabled : gCarHandleHighlightsEnabled);
 	return ShouldRenderImmersiveBikeHandleMarker(hand);
+}
+
+// Car grip boxes are drawn per rim socket rather than per hand, so the 12 and
+// 6 o'clock sockets show even while no hand holds them. Sockets 0-3 are 9, 3,
+// 12 and 6 o'clock.
+bool GetImmersiveCarWheelGripMarker(int socket, CMatrix *matrix, bool *grabbed)
+{
+	if(!matrix || socket < 0 || socket > 3 ||
+	   !IsImmersiveCarDrivingActiveInternal() ||
+	   !ShouldRenderImmersiveSteeringHandleMarker(0))
+		return false;
+	const int hand = socket == 0 ? 0 : 1;
+	const int wheelSocket = socket < 2 ? CAR_WHEEL_SOCKET_SIDE :
+		socket == 2 ? CAR_WHEEL_SOCKET_TOP : CAR_WHEEL_SOCKET_BOTTOM;
+	if(!BuildCarWheelSocketMatrixInternal(hand, wheelSocket, matrix, true))
+		return false;
+	if(grabbed){
+		*grabbed = false;
+		for(int holder = 0; holder < EYE_COUNT; holder++){
+			if(!gCarWheelGrabbed[holder] ||
+			   gCarWheelSocket[holder] != wheelSocket)
+				continue;
+			if(wheelSocket != CAR_WHEEL_SOCKET_SIDE || holder == hand)
+				*grabbed = true;
+		}
+	}
+	return true;
+}
+
+bool GetTrackedWeaponCarryMatrix(int hand, CMatrix *matrix)
+{
+	CMatrix controller;
+	if(!matrix || !IsWeaponForegripCarryInternal(hand) ||
+	   !BuildForegripCarryController(hand, &controller))
+		return false;
+	*matrix = controller*gWeaponForegripCarryModel[hand];
+	return true;
 }
 
 bool ShouldRenderImmersiveCarWheel()

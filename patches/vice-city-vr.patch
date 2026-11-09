@@ -1072,7 +1072,7 @@ index 51ef6c0..b829134 100644
  	static char *GetCutsceneName(void) { return ms_cutsceneName; }
  	static void SetCutsceneOffset(const CVector& vec) { ms_cutsceneOffset = vec; }
 diff --git a/src/audio/AudioLogic.cpp b/src/audio/AudioLogic.cpp
-index 7469f57..bed296e 100644
+index 7469f57..7fdb4c2 100644
 --- a/src/audio/AudioLogic.cpp
 +++ b/src/audio/AudioLogic.cpp
 @@ -42,6 +42,9 @@
@@ -1105,6 +1105,26 @@ index 7469f57..bed296e 100644
  	}
  	channelUsed = SampleManager.GetChannelUsedFlag(m_nActiveSamples);
  	if (isMoped) {
+@@ -4524,6 +4540,19 @@ cAudioManager::ProcessPedOneShots(cPedParams &params)
+ 			break;
+ 		case SOUND_WEAPON_SHOT_FIRED:
+ 			weapon = ped->GetWeapon();
++#ifdef GTA_VR_OPENXR
++			// CWeapon::Fire names the type that fired. Throwables and the
++			// detonator have no shot sound, so one used from the other hand
++			// stays silent instead of playing the current gun.
++			{
++				static CWeapon vrShotWeapon;
++				const int32 shotType = (int32)m_asAudioEntities[m_sQueueSample.m_nEntityIndex].m_afVolume[i] - 1;
++				if (shotType >= 0 && shotType < WEAPONTYPE_TOTALWEAPONS) {
++					vrShotWeapon.m_eWeaponType = (eWeaponType)shotType;
++					weapon = &vrShotWeapon;
++				}
++			}
++#endif
+ 			if (!weapon)
+ 				continue;
+ 			switch (weapon->m_eWeaponType) {
 diff --git a/src/audio/MusicManager.cpp b/src/audio/MusicManager.cpp
 index 9c6f61f..f2e3cfd 100644
 --- a/src/audio/MusicManager.cpp
@@ -5920,7 +5940,7 @@ index 32aa404..8d49f8e 100644
  		return 0;
  	return fd;
 diff --git a/src/core/Frontend.cpp b/src/core/Frontend.cpp
-index d6c2649..92d0fe8 100644
+index d6c2649..c613e66 100644
 --- a/src/core/Frontend.cpp
 +++ b/src/core/Frontend.cpp
 @@ -426,12 +426,17 @@ void
@@ -8135,7 +8155,7 @@ index 6d30a65..fb33110 100644
  
  #ifndef EXTENDED_COLOURFILTER
 diff --git a/src/core/main.cpp b/src/core/main.cpp
-index a38fe72..eed8e00 100644
+index a38fe72..99a023a 100644
 --- a/src/core/main.cpp
 +++ b/src/core/main.cpp
 @@ -23,6 +23,7 @@
@@ -8304,7 +8324,7 @@ index a38fe72..eed8e00 100644
  	}
  
  	return &splash;
-@@ -1357,6 +1447,1301 @@ RenderScene(void)
+@@ -1357,6 +1447,1327 @@ RenderScene(void)
  	POP_RENDERGROUP();
  }
  
@@ -8666,6 +8686,14 @@ index a38fe72..eed8e00 100644
 +	if(!virtualDetonator)
 +		OculusVR::ApplyTrackedWeaponTwoHandTransform(hand, weaponType,
 +			&trackedWeapon);
++#ifdef GTA_VR_OPENXR
++	// A two-handed weapon carried only at its foregrip keeps the exact pose it
++	// had when the grip hand let go, and follows the carrying hand.
++	CMatrix carriedWeapon;
++	if(!virtualDetonator &&
++	   OculusVR::GetTrackedWeaponCarryMatrix(hand, &carriedWeapon))
++		trackedWeapon = carriedWeapon;
++#endif
 +	// Dropped/holstered rendering appends the authored adjustment itself. Store
 +	// the exact inverse-adjusted placement so releasing a calibrated weapon does
 +	// not make it jump, while the dropped path still reconstructs this same final
@@ -9285,9 +9313,27 @@ index a38fe72..eed8e00 100644
 +static void
 +RenderVrSteeringHandleMarkers(void)
 +{
-+	RwIm3DVertex vertices[16];
-+	RwImVertexIndex indices[72];
++	RwIm3DVertex vertices[32];
++	RwImVertexIndex indices[144];
 +	int vertexCount = 0, indexCount = 0;
++#ifdef GTA_VR_OPENXR
++	// A car wheel has a box at every rim socket (9, 3, 12 and 6 o'clock),
++	// whether or not a hand holds it. Bikes keep one box per hand below.
++	bool carSockets = false;
++	for(int socket = 0; socket < 4; socket++){
++		CMatrix matrix;
++		bool grabbed = false;
++		if(!OculusVR::GetImmersiveCarWheelGripMarker(socket, &matrix, &grabbed))
++			continue;
++		carSockets = true;
++		AppendVrHandBox(vertices, vertexCount, indices, indexCount,
++			matrix.GetPosition(), matrix.GetRight(), matrix.GetUp(),
++			matrix.GetForward(), 0.035f, 0.035f, 0.055f,
++			grabbed ? 70 : 35, grabbed ? 245 : 180,
++			grabbed ? 125 : 245);
++	}
++	if(!carSockets)
++#endif
 +	for(int hand = 0; hand < 2; hand++){
 +		if(!OculusVR::ShouldRenderImmersiveSteeringHandleMarker(hand))
 +			continue;
@@ -9606,7 +9652,7 @@ index a38fe72..eed8e00 100644
  void
  RenderDebugShit(void)
  {
-@@ -1382,10 +2767,19 @@ RenderEffects(void)
+@@ -1382,10 +2793,19 @@ RenderEffects(void)
  	}
  #endif
  	PUSH_RENDERGROUP("RenderEffects");
@@ -9626,7 +9672,7 @@ index a38fe72..eed8e00 100644
  	CShadows::RenderStaticShadows();
  	CShadows::RenderStoredShadows();
  	CSkidmarks::Render();
-@@ -1396,11 +2790,624 @@ RenderEffects(void)
+@@ -1396,11 +2816,624 @@ RenderEffects(void)
  	CPacManPickups::Render();
  	CWeaponEffects::Render();
  	CPointLights::RenderFogEffect();
@@ -10251,7 +10297,7 @@ index a38fe72..eed8e00 100644
  void
  Render2dStuff(void)
  {
-@@ -1411,9 +3418,14 @@ Render2dStuff(void)
+@@ -1411,9 +3444,14 @@ Render2dStuff(void)
  	RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDSRCALPHA);
  	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
  	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
@@ -10267,7 +10313,7 @@ index a38fe72..eed8e00 100644
  
  	if(TheCamera.m_WideScreenOn
  #ifdef CUTSCENE_BORDERS_SWITCH
-@@ -1453,21 +3465,92 @@ Render2dStuff(void)
+@@ -1453,21 +3491,92 @@ Render2dStuff(void)
  		CSprite2d::DrawRect(CRect(SCREEN_WIDTH / 2 + SCREEN_SCALE_X(210), 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), black);
  	}
  
@@ -10369,7 +10415,7 @@ index a38fe72..eed8e00 100644
  	CFont::DrawFonts();
  #ifndef MASTER
  	COcclusion::Render();
-@@ -1505,7 +3588,14 @@ Render2dStuffAfterFade(void)
+@@ -1505,7 +3614,14 @@ Render2dStuffAfterFade(void)
  #ifdef MOBILE_IMPROVEMENTS
  	if (CDraw::FadeValue != 0)
  #endif
@@ -10385,7 +10431,7 @@ index a38fe72..eed8e00 100644
  	CFont::DrawFonts();
  	CCredits::Render();
  	POP_RENDERGROUP();
-@@ -1515,39 +3605,77 @@ void
+@@ -1515,39 +3631,77 @@ void
  Idle(void *arg)
  {
  	CTimer::Update();
@@ -10464,7 +10510,7 @@ index a38fe72..eed8e00 100644
  
  	PUSH_MEMID(MEMID_RENDER);
  
-@@ -1562,6 +3690,12 @@ Idle(void *arg)
+@@ -1562,6 +3716,12 @@ Idle(void *arg)
  #endif
  
  		tbStartTimer(0, "CnstrRenderList");
@@ -10477,7 +10523,7 @@ index a38fe72..eed8e00 100644
  #ifdef PC_WATER
  		CWaterLevel::PreCalcWaterGeometry();
  #endif
-@@ -1572,12 +3706,43 @@ Idle(void *arg)
+@@ -1572,12 +3732,43 @@ Idle(void *arg)
  		}
  #endif
  		CRenderer::ConstructRenderList();
@@ -10521,7 +10567,7 @@ index a38fe72..eed8e00 100644
  #ifdef FIX_BUGS
  		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE); // TODO: temp? this fixes OpenGL render but there should be a better place for this
  		// This has to be done BEFORE RwCameraBeginUpdate
-@@ -1585,7 +3750,16 @@ Idle(void *arg)
+@@ -1585,7 +3776,16 @@ Idle(void *arg)
  		RwCameraSetFogDistance(Scene.camera, CTimeCycle::GetFogStart());
  #endif
  
@@ -10539,7 +10585,7 @@ index a38fe72..eed8e00 100644
  			if(!DoRWStuffStartOfFrame_Horizon(255, 255, 255, 255, 255, 255, 255))
  				goto popret;
  		}else{
-@@ -1596,6 +3770,9 @@ Idle(void *arg)
+@@ -1596,6 +3796,9 @@ Idle(void *arg)
  		}
  
  		DefinedState();
@@ -10549,7 +10595,7 @@ index a38fe72..eed8e00 100644
  
  #ifndef FIX_BUGS
  		RwCameraSetFarClipPlane(Scene.camera, CTimeCycle::GetFarClip());
-@@ -1603,34 +3780,75 @@ Idle(void *arg)
+@@ -1603,34 +3806,75 @@ Idle(void *arg)
  #endif
  
  		tbStartTimer(0, "RenderScene");
@@ -10633,7 +10679,7 @@ index a38fe72..eed8e00 100644
  		CDraw::CalculateAspectRatio();
  #ifdef ASPECT_RATIO_SCALE
  		CameraSize(Scene.camera, nil, SCREEN_VIEWWINDOW, SCREEN_ASPECT_RATIO);
-@@ -1644,6 +3862,9 @@ Idle(void *arg)
+@@ -1644,6 +3888,9 @@ Idle(void *arg)
  	}
  
  	tbStartTimer(0, "RenderMenus");
@@ -10643,7 +10689,7 @@ index a38fe72..eed8e00 100644
  	RenderMenus();
  	tbEndTimer("RenderMenus");
  
-@@ -1667,15 +3888,35 @@ Idle(void *arg)
+@@ -1667,15 +3914,35 @@ Idle(void *arg)
  	if (gbShowTimebars)
  		tbDisplay();
  
@@ -18874,7 +18920,7 @@ index d168894..c80f9f5 100644
 \ No newline at end of file
 +extern CProjectileInfo gaProjectileInfo[NUM_PROJECTILES];
 diff --git a/src/weapons/Weapon.cpp b/src/weapons/Weapon.cpp
-index 7a54941..2afc8bc 100644
+index 7a54941..f8236c6 100644
 --- a/src/weapons/Weapon.cpp
 +++ b/src/weapons/Weapon.cpp
 @@ -1,6 +1,7 @@
@@ -18919,7 +18965,23 @@ index 7a54941..2afc8bc 100644
  				}
  				break;
  			}
-@@ -459,7 +472,9 @@ CWeapon::FireFromCar(CVehicle *shooter, bool left, bool right)
+@@ -313,7 +326,15 @@ CWeapon::Fire(CEntity *shooter, CVector *fireSource)
+ 						isPlayer = true;
+ 				}
+ 				
++#ifdef GTA_VR_OPENXR
++				// The shot sound is picked later from the ped's current weapon,
++				// but a VR hand fires the weapon it holds, which can be another
++				// slot or a temporary weapon. Name its type (plus one) in the
++				// event volume.
++				DMAudio.PlayOneShot(shooterPed->m_audioEntityId, SOUND_WEAPON_SHOT_FIRED, (float)(m_eWeaponType + 1));
++#else
+ 				DMAudio.PlayOneShot(shooterPed->m_audioEntityId, SOUND_WEAPON_SHOT_FIRED, 0.0f);
++#endif
+ 				
+ 				if ( isPlayer )
+ 				{
+@@ -459,7 +480,9 @@ CWeapon::FireFromCar(CVehicle *shooter, bool left, bool right)
  }
  
  bool
@@ -18930,7 +18992,7 @@ index 7a54941..2afc8bc 100644
  {
  	ASSERT(shooter!=nil);
  
-@@ -491,12 +506,23 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -491,12 +514,23 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  
  	int damageEntityRegistered = 0;
  
@@ -18957,7 +19019,7 @@ index 7a54941..2afc8bc 100644
  				&& victimPed != shooterPed->m_leader || !(CGeneral::GetRandomNumber() & 31)
  				&& (!shooterPed->IsGangMember() || victimPed->CanBeDamagedByThisGangMember(shooterPed)) )
  		{
-@@ -510,46 +536,58 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -510,46 +544,58 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  			if ( victimPed->bUsesCollision || victimPed->Dead() || victimPed->Driving() )
  			{
  				CVector victimPedPos = victimPed->GetPosition();
@@ -19043,7 +19105,7 @@ index 7a54941..2afc8bc 100644
  
  							CVector2D posOffset(shooterPed->GetPosition().x-victimPedPos.x, shooterPed->GetPosition().y-victimPedPos.y);
  
-@@ -597,15 +635,15 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -597,15 +643,15 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  							if ( !victimPed->DyingOrDead() )
  							{
  								if ( shooterPed->IsPlayer() && isHeavy && anim2Playing )
@@ -19063,7 +19125,7 @@ index 7a54941..2afc8bc 100644
  								}
  							}
  
-@@ -715,7 +753,10 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -715,7 +761,10 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  			}
  		}
  	}
@@ -19075,7 +19137,7 @@ index 7a54941..2afc8bc 100644
  	if (nearVeh && nearVeh->IsCar())
  	{
  		CAutomobile *nearCar = (CAutomobile*)nearVeh;
-@@ -733,19 +774,25 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -733,19 +782,25 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  		{
  			for( int32 i=0; i<4; i++ )
  			{
@@ -19106,7 +19168,7 @@ index 7a54941..2afc8bc 100644
  		}
  		if (nearCar->m_fHealth < oldHealth)
  		{
-@@ -810,7 +857,10 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -810,7 +865,10 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  	}
  	if (m_eWeaponType == WEAPONTYPE_CHAINSAW)
  	{
@@ -19118,7 +19180,7 @@ index 7a54941..2afc8bc 100644
  		if (nearStatic)
  		{
  			for(int i=0; i < 4; i++) {
-@@ -837,6 +887,66 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
+@@ -837,6 +895,66 @@ CWeapon::FireMelee(CEntity *shooter, CVector &fireSource)
  	return true;
  }
  
@@ -19185,7 +19247,7 @@ index 7a54941..2afc8bc 100644
  bool
  CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
  {
-@@ -846,6 +956,8 @@ CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
+@@ -846,6 +964,8 @@ CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
  	CWeaponInfo *info = GetInfo();
  
  	CVector source, target;
@@ -19194,7 +19256,7 @@ index 7a54941..2afc8bc 100644
  	CColPoint point;
  	CEntity *victim = nil;
  
-@@ -866,6 +978,44 @@ CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
+@@ -866,6 +986,44 @@ CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
  		prev_heading = ((CPed*)shooter)->m_fRotationCur;
  	}
  
@@ -19239,7 +19301,7 @@ index 7a54941..2afc8bc 100644
  	if ( shooter->IsPed() && ((CPed *)shooter)->m_pPointGunAt )
  	{
  		CPed *shooterPed = (CPed *)shooter;
-@@ -1155,7 +1305,8 @@ CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
+@@ -1155,7 +1313,8 @@ CWeapon::FireInstantHit(CEntity *shooter, CVector *fireSource)
  		default: break;
  	}
  
@@ -19249,7 +19311,7 @@ index 7a54941..2afc8bc 100644
  
  	return true;
  }
-@@ -1257,7 +1408,8 @@ CWeapon::AddGunshell(CEntity *shooter, CVector const &source, CVector2D const &d
+@@ -1257,7 +1416,8 @@ CWeapon::AddGunshell(CEntity *shooter, CVector const &source, CVector2D const &d
  
  void
  CWeapon::DoBulletImpact(CEntity *shooter, CEntity *victim,
@@ -19259,7 +19321,7 @@ index 7a54941..2afc8bc 100644
  {
  	ASSERT(shooter!=nil);
  	ASSERT(source!=nil);
-@@ -1318,8 +1470,11 @@ CWeapon::DoBulletImpact(CEntity *shooter, CEntity *victim,
+@@ -1318,8 +1478,11 @@ CWeapon::DoBulletImpact(CEntity *shooter, CEntity *victim,
  		}
  		CGlass::WasGlassHitByBullet(victim, point->point);
  
@@ -19273,7 +19335,7 @@ index 7a54941..2afc8bc 100644
  
  		if (victim->IsPed() && shooter->IsVehicle() && ((CVehicle*)shooter)->pDriver)
  			shooter = ((CVehicle*)shooter)->pDriver;
-@@ -1584,8 +1739,9 @@ CWeapon::DoBulletImpact(CEntity *shooter, CEntity *victim,
+@@ -1584,8 +1747,9 @@ CWeapon::DoBulletImpact(CEntity *shooter, CEntity *victim,
  			default: break;
  		}
  	}
@@ -19285,7 +19347,7 @@ index 7a54941..2afc8bc 100644
  
  	if ( shooter == FindPlayerPed() )
  		CPad::GetPad(0)->StartShake_Distance(240, 128, FindPlayerPed()->GetPosition().x, FindPlayerPed()->GetPosition().y, FindPlayerPed()->GetPosition().z);
-@@ -1601,11 +1757,23 @@ CWeapon::FireShotgun(CEntity *shooter, CVector *fireSource)
+@@ -1601,11 +1765,23 @@ CWeapon::FireShotgun(CEntity *shooter, CVector *fireSource)
  	ASSERT(fireSource!=nil);
  
  	CWeaponInfo *info = GetInfo();
@@ -19309,7 +19371,7 @@ index 7a54941..2afc8bc 100644
  	rotOffset.Normalise();
  
  	CVector gunflashPos = *fireSource;
-@@ -1630,7 +1798,9 @@ CWeapon::FireShotgun(CEntity *shooter, CVector *fireSource)
+@@ -1630,7 +1806,9 @@ CWeapon::FireShotgun(CEntity *shooter, CVector *fireSource)
  
  	float shooterAngle;
  
@@ -19320,7 +19382,7 @@ index 7a54941..2afc8bc 100644
  	{
  		CEntity *threatAttack = ((CPed*)shooter)->m_pPointGunAt;
  		shooterAngle = CGeneral::GetAngleBetweenPoints(threatAttack->GetPosition().x, threatAttack->GetPosition().y,
-@@ -1675,7 +1845,27 @@ CWeapon::FireShotgun(CEntity *shooter, CVector *fireSource)
+@@ -1675,7 +1853,27 @@ CWeapon::FireShotgun(CEntity *shooter, CVector *fireSource)
  		CColPoint point;
  		CEntity *victim;
  
@@ -19349,7 +19411,7 @@ index 7a54941..2afc8bc 100644
  		{
  			TheCamera.Find3rdPersonCamTargetVector(1.0f, *fireSource, source, target);
  			CVector Left = CrossProduct(TheCamera.Cams[TheCamera.ActiveCam].Front, TheCamera.Cams[TheCamera.ActiveCam].Up);
-@@ -2010,34 +2200,93 @@ CWeapon::FireProjectile(CEntity *shooter, CVector *fireSource, float power)
+@@ -2010,34 +2208,93 @@ CWeapon::FireProjectile(CEntity *shooter, CVector *fireSource, float power)
  
  	CVector source, target;
  	eWeaponType projectileType = m_eWeaponType;
@@ -19460,7 +19522,7 @@ index 7a54941..2afc8bc 100644
  		float dot = DotProduct(*fireSource-shooter->GetPosition(), shooter->GetForward());
  
  		if ( dot < 0.3f )
-@@ -2051,8 +2300,30 @@ CWeapon::FireProjectile(CEntity *shooter, CVector *fireSource, float power)
+@@ -2051,8 +2308,30 @@ CWeapon::FireProjectile(CEntity *shooter, CVector *fireSource, float power)
  		source = *fireSource - shooter->GetPosition();
  
  		source = *fireSource - DotProduct(source, shooter->GetForward()) * shooter->GetForward();
@@ -19491,7 +19553,7 @@ index 7a54941..2afc8bc 100644
  	if ( !CWorld::GetIsLineOfSightClear(source, target, true, true, false, true, false, false, false) )
  	{
  		if ( m_eWeaponType != WEAPONTYPE_GRENADE )
-@@ -2118,6 +2389,19 @@ CWeapon::FireAreaEffect(CEntity *shooter, CVector *fireSource)
+@@ -2118,6 +2397,19 @@ CWeapon::FireAreaEffect(CEntity *shooter, CVector *fireSource)
  	CVector target;
  	CVector dir;
  
@@ -19511,7 +19573,7 @@ index 7a54941..2afc8bc 100644
  	if ( shooter == FindPlayerPed() && TheCamera.Cams[0].Using3rdPersonMouseCam() )
  	{
  		TheCamera.Find3rdPersonCamTargetVector(info->m_fRange, *fireSource, source, target);
-@@ -2189,8 +2473,14 @@ bool
+@@ -2189,8 +2481,14 @@ bool
  CWeapon::FireSniper(CEntity *shooter)
  {
  	ASSERT(shooter!=nil);
@@ -19528,7 +19590,7 @@ index 7a54941..2afc8bc 100644
  	{
  		int16 mode = TheCamera.Cams[TheCamera.ActiveCam].Mode;
  		if (!( mode == CCam::MODE_M16_1STPERSON
-@@ -2219,8 +2509,8 @@ CWeapon::FireSniper(CEntity *shooter)
+@@ -2219,8 +2517,8 @@ CWeapon::FireSniper(CEntity *shooter)
  	CCam *cam = &TheCamera.Cams[TheCamera.ActiveCam];
  	ASSERT(cam!=nil);
  
@@ -19539,7 +19601,7 @@ index 7a54941..2afc8bc 100644
  
  	if ( DotProduct(dir, CVector(0.0f, -0.9894f, 0.145f)) > 0.997f )
  		CCoronas::MoonSize = (CCoronas::MoonSize+1) & 7;
-@@ -2243,7 +2533,11 @@ CWeapon::FireSniper(CEntity *shooter)
+@@ -2243,7 +2541,11 @@ CWeapon::FireSniper(CEntity *shooter)
  			
  		CParticle::HandleShootableBirdsStuff(shooter, source);
  
@@ -19552,7 +19614,7 @@ index 7a54941..2afc8bc 100644
  	}
  
  	if ( shooter->IsPed() )
-@@ -2257,55 +2551,76 @@ CWeapon::FireSniper(CEntity *shooter)
+@@ -2257,55 +2559,76 @@ CWeapon::FireSniper(CEntity *shooter)
  bool
  CWeapon::TakePhotograph(CEntity *shooter)
  {
@@ -19675,7 +19737,7 @@ index 7a54941..2afc8bc 100644
  }
  
  bool
-@@ -2335,27 +2650,55 @@ CWeapon::FireM16_1stPerson(CEntity *shooter)
+@@ -2335,27 +2658,55 @@ CWeapon::FireM16_1stPerson(CEntity *shooter)
  	CColPoint point;
  	CEntity *victim;
  
@@ -19737,7 +19799,7 @@ index 7a54941..2afc8bc 100644
  
  	CVector bulletPos;
  
-@@ -2387,8 +2730,10 @@ CWeapon::FireM16_1stPerson(CEntity *shooter)
+@@ -2387,8 +2738,10 @@ CWeapon::FireM16_1stPerson(CEntity *shooter)
  		if (FindPlayerPed()->bIsDucking || FindPlayerPed()->m_attachedTo)
  			mult *= 0.3f;
  
@@ -19750,7 +19812,7 @@ index 7a54941..2afc8bc 100644
  
  		// yes, double
  		double notFiringRate = (20.0 - info->m_nFiringRate) / 80.0;
-@@ -3190,7 +3535,11 @@ CPed::IsPedDoingDriveByShooting(void)
+@@ -3190,7 +3543,11 @@ CPed::IsPedDoingDriveByShooting(void)
  bool
  CWeapon::ProcessLineOfSight(CVector const &point1, CVector const &point2, CColPoint &point, CEntity *&entity, eWeaponType type, CEntity *shooter, bool checkBuildings, bool checkVehicles, bool checkPeds, bool checkObjects, bool checkDummies, bool ignoreSeeThrough, bool ignoreSomeObjects)
  {
