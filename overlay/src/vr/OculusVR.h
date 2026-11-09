@@ -146,6 +146,9 @@ bool IsHudPanelOnWrist(int panel);
 bool IsClassicHudWeaponPanelVisible();
 bool IsClassicHudClockVisible();
 void GetWristAmmoColour(uint8 *red, uint8 *green, uint8 *blue);
+// Weapon slot whose ammo wrist panel 3 or 4 shows: -1 for the current weapon,
+// -2 for none.
+int GetWristAmmoSlot(int panel);
 #endif
 bool UseFullStereoSinglePass();
 bool AreTrackedHandsEnabled();
@@ -159,6 +162,8 @@ bool IsTrackedWeaponLaserEnabledForType(int weaponType);
 bool IsTrackedScopeActive();
 bool IsTrackedScopeActiveForHand(int hand);
 int GetTrackedScopeWeaponType();
+// Current magnification while it should be shown inside the optic.
+bool GetTrackedScopeZoomLabel(float *zoom);
 bool ShouldUseTrackedWeapon(int hand);
 bool IsTrackedWeaponTriggerPressed(int hand);
 bool IsTrackedWeaponTriggerJustPressed(int hand);
@@ -255,6 +260,8 @@ bool ShouldRenderImmersiveCarWheel();
 bool GetImmersiveCarWheelPose(CVector *center, CVector *right,
 	CVector *up, CVector *normal, float *radius);
 void UpdateImmersiveCarModelSteeringWheel(CVehicle *vehicle);
+bool GetImmersiveCarWheelGripMarker(int socket, CMatrix *matrix, bool *grabbed);
+bool GetTrackedWeaponCarryMatrix(int hand, CMatrix *matrix);
 #endif
 bool IsVrBikeHorizonLocked();
 bool IsImmersiveBikeSidearm(int weaponType);
